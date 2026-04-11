@@ -1,55 +1,108 @@
-# Forecasting Report Usage with Auto-ARIMA (Synthetic Data)
+# Power BI Usage Intelligence: Forecasting, Behavioural Analytics, and GenAI Insights
 
-Portfolio-ready data science project demonstrating end-to-end time-series forecasting and deployment planning.
+This project explores how Power BI usage data can be turned into practical intelligence for analytics teams. The current version focuses on a notebook-first forecasting baseline that predicts daily report usage from synthetic, shareable data. The longer-term direction is to combine forecasting, behavioural analytics, and GenAI-assisted explanations into a lightweight decision-support workflow.
 
-## Project goals
-- Forecast daily report usage for multiple reports
-- Compare ARIMA vs naive and seasonal-naive baselines
-- Apply acceptance criteria to publish only useful forecasts
-- Track forecast/metrics history and realized errors
-- Provide a practical Azure Databricks ML pipeline path
+The repository is intentionally small at this stage. It is structured so the current notebook can be reviewed easily, while leaving a clean foundation for future modelling, evaluation, and documentation work.
 
-## Main artifact
-- `Forecast_Report_Usage_synthetic_improved.ipynb`
+## Project Overview
 
-## Highlights
-- Synthetic dataset with realistic behavior: weekly seasonality, trend, noise, zero days
-- Per-report daily series modeling with `pmdarima.auto_arima`
-- Robust metrics: MAE, RMSE, WAPE, improvement vs baselines
-- Quality gates for model acceptance
-- Non-negative clipping for count forecasts
-- Schema-safe outputs for BI consumption
+The current notebook demonstrates an end-to-end baseline workflow for report usage forecasting:
 
-## Repository structure
-- `Forecast_Report_Usage_synthetic_improved.ipynb`: full workflow
-- `outputs/`: generated CSV outputs (latest + history files)
-- `requirements.txt`: Python dependencies
+- Generates synthetic report usage data with weekly patterns, trend, noise, and zero-activity days.
+- Builds daily report-level time series from user-level usage records.
+- Applies data sufficiency checks before modelling.
+- Trains per-report Auto-ARIMA models.
+- Compares model performance against naive and seasonal-naive baselines.
+- Publishes forecast, metrics, history, and realised-error style outputs for downstream review.
 
-## Setup
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
-jupyter notebook
+The project is designed as a portfolio-friendly version of a realistic analytics problem, without exposing private Power BI or organisational usage data.
+
+## Business Problem
+
+Analytics teams often know which Power BI reports exist, but not which ones are becoming more important, which ones are losing engagement, or where future demand may require support. A usage intelligence workflow can help answer questions such as:
+
+- Which reports are likely to see higher demand over the next month?
+- Which reports have stable enough usage patterns to forecast responsibly?
+- Which reports should be monitored because their usage is volatile, declining, or difficult to predict?
+- How could future GenAI summaries help stakeholders understand changes in report behaviour?
+
+The current project focuses on the forecasting foundation. Behavioural segmentation and GenAI-generated insights are planned extensions, not completed features.
+
+## Simple Architecture
+
+The current workflow is intentionally lightweight:
+
+1. **Synthetic usage data** is generated inside the notebook.
+2. **Data quality checks** identify report series suitable for forecasting.
+3. **Forecasting baseline** trains Auto-ARIMA models and compares them with simple baselines.
+4. **Output tables** are written to `outputs/` for forecasts, metrics, history, and realised-error tracking.
+5. **Future layers** may add behavioural analytics, GenAI narrative summaries, and production orchestration.
+
+See [docs/architecture.md](docs/architecture.md) for a small architecture note and future direction.
+
+## What Makes This Project Different
+
+This is not just a time-series notebook. The aim is to show how forecasting can become part of a broader usage intelligence product:
+
+- **Forecasting:** predict future report usage and compare against defensible baselines.
+- **Behavioural analytics:** planned analysis of usage patterns, engagement changes, and report adoption signals.
+- **GenAI direction:** planned narrative summaries that explain forecast changes, risks, and stakeholder actions in plain language.
+- **Operational thinking:** current outputs already consider schema-safe tables, forecast history, and realised-error backfill concepts.
+
+The GenAI layer is deliberately not implemented yet. It is included as a roadmap direction so the project can grow from a modelling exercise into a more complete analytics product.
+
+## Repository Structure
+
+```text
+report-usage-forecasting/
+├── data/                         # Placeholder for local or sample data
+├── docs/                         # Lightweight project notes
+├── notebooks/
+│   └── 01_forecasting_baseline.ipynb
+├── outputs/                      # Generated forecast and metrics outputs
+├── src/                          # Placeholder for future reusable Python modules
+├── .gitignore
+├── LICENSE
+├── README.md
+└── requirements.txt
 ```
 
-## Output files
-Generated in `outputs/`:
-- `report_view_forecasts_latest.csv`
-- `report_view_metrics_latest.csv`
-- `forecasts_history.csv`
-- `metrics_history.csv`
-- `realized_errors_history.csv`
+## How To Run
 
-## Databricks expansion
-The notebook includes a dedicated section with:
-- Bronze/Silver/Gold Delta design
-- Databricks Workflows orchestration pattern
-- MLflow tracking integration points
-- Example pseudocode for Spark + Delta writes
+From the project root:
 
-## Suggested next enhancements
-1. Add walk-forward cross-validation per report
-2. Log experiments to MLflow with model/version tags
-3. Add CI checks for notebook execution and schema validation
-4. Add dashboard visuals for forecast performance by horizon
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+jupyter notebook notebooks/01_forecasting_baseline.ipynb
+```
+
+Then run the notebook cells in order. Generated CSV outputs are written to the project-level `outputs/` folder.
+
+## Current Status
+
+Implemented now:
+
+- Synthetic Power BI-style usage dataset.
+- Baseline report-level forecasting notebook.
+- Auto-ARIMA modelling with naive and seasonal-naive comparisons.
+- Basic model acceptance criteria.
+- Forecast, metrics, history, and realised-error output patterns.
+- Lightweight project structure for continued development.
+
+Planned next:
+
+- Stronger evaluation using rolling-origin backtesting.
+- More visual diagnostics for forecast quality and residual behaviour.
+- Behavioural analytics features such as report usage segments and adoption signals.
+- A small GenAI insight layer that summarises forecast changes and potential actions.
+- Optional extraction of reusable notebook logic into `src/` modules.
+
+## Roadmap
+
+1. Add rolling-origin evaluation and per-horizon metrics.
+2. Add a concise diagnostics section with forecast-vs-actual and error-by-horizon visuals.
+3. Create a small behavioural analytics notebook or module for report usage segmentation.
+4. Draft GenAI prompt templates for future usage summaries, without connecting to an API yet.
+5. Move stable notebook functions into `src/` only when the workflow is mature enough to reuse.
