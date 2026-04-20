@@ -55,12 +55,22 @@ The GenAI layer is deliberately not implemented yet. It is included as a roadmap
 
 ```text
 report-usage-forecasting/
-├── data/                         # Placeholder for local or sample data
-├── docs/                         # Lightweight project notes
+├── data/
+│   ├── raw/                      # Synthetic raw telemetry-style CSV tables
+│   └── processed/                # Clean semantic model CSV tables
+├── docs/                         # Architecture and data model notes
 ├── notebooks/
-│   └── 01_forecasting_baseline.ipynb
-├── outputs/                      # Generated forecast and metrics outputs
-├── src/                          # Placeholder for future reusable Python modules
+│   ├── 01_forecasting_baseline.ipynb
+│   ├── 02_generate_raw_tables.ipynb
+│   ├── 03_build_semantic_model_csv.ipynb
+│   └── 04_validate_semantic_model_hybrid_gx_csv.ipynb
+├── outputs/
+│   └── validation/               # Validation results and reconciliation outputs
+├── src/
+│   └── data/
+│       ├── generate_synthetic_data.py
+│       ├── build_semantic_model.py
+│       └── validate_model.py
 ├── .gitignore
 ├── LICENSE
 ├── README.md
@@ -79,6 +89,62 @@ jupyter notebook notebooks/01_forecasting_baseline.ipynb
 ```
 
 Then run the notebook cells in order. Generated CSV outputs are written to the project-level `outputs/` folder.
+
+## Running the Data Pipeline
+
+The data pipeline can be run in two ways:
+
+- **Notebooks** for exploration, transparency, and storytelling.
+- **Python scripts** for a repeatable CSV-based pipeline.
+
+Pipeline flow:
+
+```text
+data/raw/ -> data/processed/ -> outputs/validation/
+```
+
+### Option 1 — Run via Notebooks (Recommended for exploration)
+
+Use this path when you want to inspect the logic, understand the modelling choices, or walk through the workflow step by step.
+
+Run the notebooks in this order:
+
+1. `notebooks/02_generate_raw_tables.ipynb`
+   - Generates synthetic raw telemetry-style tables.
+   - Writes CSV files to `data/raw/`.
+
+2. `notebooks/03_build_semantic_model_csv.ipynb`
+   - Builds clean dimension and fact tables.
+   - Writes CSV files to `data/processed/`.
+
+3. `notebooks/04_validate_semantic_model_hybrid_gx_csv.ipynb`
+   - Runs data quality checks using Great Expectations and pandas.
+   - Writes validation outputs to `outputs/validation/`.
+
+### Option 2 — Run via Python Scripts (Reproducible pipeline)
+
+Use this path when you want to regenerate the pipeline outputs consistently from the command line.
+
+From the project root, run:
+
+```bash
+python src/data/generate_synthetic_data.py
+python src/data/build_semantic_model.py
+python src/data/validate_model.py
+```
+
+The scripts perform the same core workflow as the notebooks:
+
+- `generate_synthetic_data.py` creates raw synthetic tables in `data/raw/`.
+- `build_semantic_model.py` builds cleaned dimensions and fact tables in `data/processed/`.
+- `validate_model.py` runs validation checks and writes results to `outputs/validation/`.
+
+### Why This Structure?
+
+- Separates raw telemetry-style data from cleaned semantic model outputs.
+- Mirrors a real-world analytics engineering workflow.
+- Supports both experimentation and reproducibility.
+- Makes the project easier to extend with forecasting features, behavioural analytics, and future GenAI insight layers.
 
 ## Current Status
 
