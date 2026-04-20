@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project reconstructs Power BI usage telemetry into a clean analytics model for behavioral analysis, forecasting, and later GenAI-generated insights.
+This project reconstructs Power BI usage telemetry into a clean analytics model for behavioural analysis, forecasting, and later GenAI-generated insights.
 
 The goal of this data model is to move from raw usage-style tables into a structured semantic layer that supports:
 
@@ -12,7 +12,7 @@ The goal of this data model is to move from raw usage-style tables into a struct
 - feature engineering for forecasting
 - future AI-generated explanations and recommendations
 
-This document defines the first version of the model, including raw source-inspired tables, fact vs dimension classification, table grain, key columns, and core relationships.
+This document defines the current version of the model, including raw source-inspired tables, fact vs dimension classification, table grain, key columns, and core relationships.
 
 ---
 
@@ -23,7 +23,7 @@ The model is designed as a **star schema** with:
 - **dimension tables** for descriptive business context
 - **fact tables** for measurable usage and performance events
 
-This first version focuses on the core telemetry needed to support usage analytics and forecasting.
+This version focuses on the core telemetry needed to support usage analytics and forecasting.
 
 ---
 
@@ -210,7 +210,7 @@ One row per `date x report x user x consumption_method x distribution_method`.
 ## `report_page_views`
 
 **Type:** Source fact-like  
-**Business purpose:** Represents page-level usage behavior within reports.
+**Business purpose:** Represents page-level usage behaviour within reports.
 
 **Grain:**  
 One row per page-view event.
@@ -350,7 +350,7 @@ One row per page within a report.
 ## `fact_report_views`
 
 **Type:** Fact  
-**Business purpose:** Stores report-level usage measures for behavioral analysis and forecasting.
+**Business purpose:** Stores report-level usage measures for behavioural analysis and forecasting.
 
 **Grain:**  
 One row per `date x report x user x consumption_method x distribution_method`.
