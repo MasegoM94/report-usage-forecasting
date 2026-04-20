@@ -27,6 +27,32 @@ This first version focuses on the core telemetry needed to support usage analyti
 
 ---
 
+## Modeling Assumptions
+
+The assumptions below reflect the implementation in notebooks `02_generate_raw_tables.ipynb`, `03_build_semantic_model_csv.ipynb`, and `04_validate_semantic_model_hybrid_gx_csv.ipynb`.
+
+- The current data is synthetic and is designed to mimic Power BI usage telemetry rather than reproduce an exported production schema exactly.
+- The synthetic dataset is generated with a fixed random seed so the sample data can be recreated consistently during development.
+- The current simulation covers 30 reports, 200 users, and the date range from `2025-01-01` through `2026-03-31`.
+- `reports`, `users`, `report_pages`, and `dates` are treated as raw lookup/source-aligned tables that become dimensions in the processed semantic model.
+- `report_views`, `report_page_views`, and `report_load_times` are treated as raw telemetry tables that become fact tables in the processed semantic model.
+- `dim_date.date_key` is derived from `date` using `YYYYMMDD` integer format.
+- `dim_user.user_key` is the canonical user join key in the semantic model. `user_id` is retained as descriptive user information where available.
+- `dim_report.report_id` is the canonical report join key.
+- `dim_page.page_key` is a surrogate key generated in the semantic build because the natural page business key is `report_id + section_id`.
+- Only reports with type `Report` or `Dashboard` receive page records in the synthetic raw data. `Paginated` reports do not receive page-level rows in `report_pages`.
+- `report_views` is generated only when at least one report view occurs for a `date x report x user` combination.
+- `fact_report_views` keeps the report-level usage grain as `date x report x user x consumption_method x distribution_method` and stores `view_count` as the usage measure.
+- `report_page_views` is derived from `report_views`, so page-level activity exists only for report views where the report has page metadata.
+- `fact_page_views` is event-level in the current processed model. Each row represents one simulated page-view event and `page_view_count` is set to `1`.
+- `report_load_times` is derived from `report_views`, so each report-view row receives a corresponding simulated load-time record.
+- `fact_report_loads` is event-level in the current processed model and stores `load_time_ms` as the performance measure.
+- The semantic model does not currently implement slowly changing dimensions. Dimension rows are treated as the latest/static descriptive state for this first version.
+- Because the synthetic raw lookup tables are generated with unique keys, the processed table row counts are expected to match the corresponding raw table row counts.
+- The validation layer assumes dimension primary keys are unique, required fact keys are non-null, fact foreign keys exist in the matching dimensions, and raw-to-processed row counts reconcile.
+
+---
+
 ## Table Inventory
 
 ### Source-inspired tables
@@ -164,11 +190,12 @@ One row per calendar date.
 One row per `date x report x user x consumption_method x distribution_method`.
 
 **Candidate key:**  
-- composite: `date + report_id + user_id + consumption_method + distribution_method`
+- composite: `date + report_id + user_key + consumption_method + distribution_method`
 
 **Important columns:**  
 - `date`
 - `report_id`
+- `user_key`
 - `user_id`
 - `consumption_method`
 - `distribution_method`
@@ -186,11 +213,11 @@ One row per `date x report x user x consumption_method x distribution_method`.
 **Business purpose:** Represents page-level usage behavior within reports.
 
 **Grain:**  
-One row per page-view event, or one row per `date x report x page x user` if aggregated.
+One row per page-view event.
 
 **Candidate key:**  
-- event grain: `timestamp`
-- aggregated grain: `date + report_id + section_id + user_key`
+- No explicit stable event ID is generated in the current synthetic data.
+- Row identity is implied by the event row.
 
 **Important columns:**  
 - `timestamp`
@@ -352,7 +379,7 @@ One row per `date x report x user x consumption_method x distribution_method`.
 **Business purpose:** Stores page-level interaction measures used to understand report engagement depth.
 
 **Grain:**  
-One row per page-view event or one row per `date x report x page x user` if aggregated.
+One row per page-view event.
 
 **Foreign keys:**  
 - `date_key`
