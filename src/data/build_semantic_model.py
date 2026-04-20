@@ -129,7 +129,7 @@ def build_fact_page_views(
     )
 
     # The notebook joins page keys by section_id only. section_id currently embeds
-    # report_id, so this preserves the implemented behavior.
+    # report_id, so this preserves the implemented behaviour.
     fact_page_views = fact_page_views.merge(
         dim_page[["page_key", "section_id"]],
         on="section_id",
