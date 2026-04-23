@@ -115,3 +115,76 @@ def build_report_daily_adoption(
     )
 
     return result
+
+
+def add_time_series_usage_features(
+    df: pd.DataFrame,
+    date_col: str = "date",
+    report_col: str = "report_id",
+) -> pd.DataFrame:
+    """Add rolling usage features and week-over-week change by report.
+
+    Parameters
+    ----------
+    df:
+        Daily report-level feature table. The input is expected to already
+        contain one row per date and report, including zero-usage days.
+    date_col:
+        Name of the date column.
+    report_col:
+        Name of the report identifier column.
+
+    Returns
+    -------
+    pd.DataFrame
+        The input dataset enriched with:
+        `views_7d`, `views_28d`, `wow_change_views`,
+        `viewers_7d`, and `viewers_28d`.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame.")
+
+    required_columns = [date_col, report_col, "daily_views", "unique_viewers"]
+    _validate_input_columns(df, required_columns)
+
+    if df.empty:
+        return df.copy()
+
+    enriched_df = df.copy()
+    enriched_df[date_col] = _coerce_to_datetime(enriched_df[date_col])
+
+    if enriched_df[date_col].isna().any():
+        raise ValueError(
+            f"Unable to parse all values in '{date_col}' into valid datetimes."
+        )
+
+    for measure_col in ["daily_views", "unique_viewers"]:
+        if not pd.api.types.is_numeric_dtype(enriched_df[measure_col]):
+            raise TypeError(f"'{measure_col}' must be numeric.")
+
+    enriched_df = enriched_df.sort_values([report_col, date_col]).reset_index(drop=True)
+
+    report_groups = enriched_df.groupby(report_col, group_keys=False)
+
+    enriched_df["views_7d"] = report_groups["daily_views"].transform(
+        lambda series: series.rolling(window=7, min_periods=1).sum()
+    )
+    enriched_df["views_28d"] = report_groups["daily_views"].transform(
+        lambda series: series.rolling(window=28, min_periods=1).sum()
+    )
+    enriched_df["viewers_7d"] = report_groups["unique_viewers"].transform(
+        lambda series: series.rolling(window=7, min_periods=1).sum()
+    )
+    enriched_df["viewers_28d"] = report_groups["unique_viewers"].transform(
+        lambda series: series.rolling(window=28, min_periods=1).sum()
+    )
+
+    lag_7d = report_groups["daily_views"].shift(7)
+    enriched_df["wow_change_views"] = (
+        enriched_df["daily_views"] - lag_7d
+    ).div(lag_7d.where(lag_7d.ne(0)))
+    enriched_df["wow_change_views"] = enriched_df["wow_change_views"].replace(
+        [float("inf"), float("-inf")], pd.NA
+    )
+
+    return enriched_df
