@@ -1,7 +1,7 @@
 """Generate raw synthetic Power BI-style usage telemetry tables.
 
 This script mirrors the implemented logic in
-`notebooks/02_generate_raw_tables.ipynb` and writes CSV files to `data/raw/`.
+`notebooks/01_generate_raw_tables.ipynb` and writes CSV files to `data/raw/`.
 """
 
 from pathlib import Path

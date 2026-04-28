@@ -1,7 +1,7 @@
 """Validate the processed semantic model with Great Expectations and pandas.
 
 This script mirrors the implemented logic in
-`notebooks/04_validate_semantic_model_hybrid_gx_csv.ipynb` and writes CSV
+`notebooks/03_validate_semantic_model_hybrid_gx_csv.ipynb` and writes CSV
 validation outputs to `outputs/validation/`.
 """
 

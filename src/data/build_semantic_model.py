@@ -1,7 +1,7 @@
 """Build the processed semantic model from raw CSV tables.
 
 This script mirrors the implemented logic in
-`notebooks/03_build_semantic_model_csv.ipynb` and writes CSV files to
+`notebooks/02_build_semantic_model_csv.ipynb` and writes CSV files to
 `data/processed/`.
 """
 

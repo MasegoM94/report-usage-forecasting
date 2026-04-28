@@ -29,7 +29,7 @@ This version focuses on the core telemetry needed to support usage analytics and
 
 ## Modeling Assumptions
 
-The assumptions below reflect the implementation in notebooks `02_generate_raw_tables.ipynb`, `03_build_semantic_model_csv.ipynb`, and `04_validate_semantic_model_hybrid_gx_csv.ipynb`.
+The assumptions below reflect the implementation in notebooks `01_generate_raw_tables.ipynb`, `02_build_semantic_model_csv.ipynb`, and `03_validate_semantic_model_hybrid_gx_csv.ipynb`.
 
 - The current data is synthetic and is designed to mimic Power BI usage telemetry rather than reproduce an exported production schema exactly.
 - The synthetic dataset is generated with a fixed random seed so the sample data can be recreated consistently during development.
