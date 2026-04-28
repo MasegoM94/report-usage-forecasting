@@ -4,30 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-
-def _validate_input_columns(df: pd.DataFrame, required_columns: list[str]) -> None:
-    """Raise a helpful error when required columns are missing."""
-    missing_columns = [column for column in required_columns if column not in df.columns]
-    if missing_columns:
-        missing_list = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Missing required columns: {missing_list}")
-
-
-def _coerce_to_datetime(date_series: pd.Series) -> pd.Series:
-    """Convert a date-like series to pandas datetime values."""
-    if pd.api.types.is_datetime64_any_dtype(date_series):
-        return pd.to_datetime(date_series, errors="coerce")
-
-    if pd.api.types.is_numeric_dtype(date_series):
-        parsed_dates = pd.to_datetime(
-            date_series.astype("Int64").astype(str),
-            format="%Y%m%d",
-            errors="coerce",
-        )
-        if parsed_dates.notna().any():
-            return parsed_dates
-
-    return pd.to_datetime(date_series, errors="coerce")
+from src.features._common import _normalize_date_column, _validate_input_columns
 
 
 def build_report_performance_features(
@@ -74,11 +51,7 @@ def build_report_performance_features(
         )
 
     working_df = fact_report_loads.copy()
-    working_df["date"] = _coerce_to_datetime(working_df[date_col]).dt.normalize()
-    if working_df["date"].isna().any():
-        raise ValueError(
-            f"Unable to parse all values in '{date_col}' into valid datetimes."
-        )
+    working_df["date"] = _normalize_date_column(working_df, date_col)
 
     working_df["report_id"] = working_df[report_col]
     working_df["load_time"] = pd.to_numeric(working_df[load_time_col], errors="coerce")

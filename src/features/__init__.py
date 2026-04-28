@@ -1,5 +1,6 @@
 """Feature engineering modules."""
 
+from src.features.build_forecast_features import build_forecast_feature_table
 from src.features.engagement_features import build_user_engagement_features
 from src.features.performance_features import build_report_performance_features
 from src.features.report_features import (
@@ -12,4 +13,5 @@ __all__ = [
     "add_time_series_usage_features",
     "build_user_engagement_features",
     "build_report_performance_features",
+    "build_forecast_feature_table",
 ]

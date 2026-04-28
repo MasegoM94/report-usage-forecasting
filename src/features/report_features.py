@@ -4,29 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-
-def _validate_input_columns(
-    fact_report_views: pd.DataFrame,
-    required_columns: list[str],
-) -> None:
-    """Raise a helpful error if one or more required columns are missing."""
-    missing_columns = [column for column in required_columns if column not in fact_report_views]
-    if missing_columns:
-        missing_list = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Missing required columns: {missing_list}")
-
-
-def _coerce_to_datetime(date_series: pd.Series) -> pd.Series:
-    """Convert a date-like series to pandas datetime values."""
-    if pd.api.types.is_datetime64_any_dtype(date_series):
-        return pd.to_datetime(date_series, errors="coerce")
-
-    if pd.api.types.is_numeric_dtype(date_series):
-        parsed_dates = pd.to_datetime(date_series.astype("Int64").astype(str), format="%Y%m%d", errors="coerce")
-        if parsed_dates.notna().any():
-            return parsed_dates
-
-    return pd.to_datetime(date_series, errors="coerce")
+from src.features._common import _normalize_date_column, _validate_input_columns
 
 
 def build_report_daily_adoption(
@@ -72,14 +50,7 @@ def build_report_daily_adoption(
         )
 
     working_df = fact_report_views.copy()
-    working_df["date"] = _coerce_to_datetime(working_df[date_col])
-
-    if working_df["date"].isna().any():
-        raise ValueError(
-            f"Unable to parse all values in '{date_col}' into valid datetimes."
-        )
-
-    working_df["date"] = working_df["date"].dt.normalize()
+    working_df["date"] = _normalize_date_column(working_df, date_col)
     working_df["report_id"] = working_df[report_col]
     working_df["_user_id"] = working_df[user_col]
 
@@ -151,12 +122,7 @@ def add_time_series_usage_features(
         return df.copy()
 
     enriched_df = df.copy()
-    enriched_df[date_col] = _coerce_to_datetime(enriched_df[date_col])
-
-    if enriched_df[date_col].isna().any():
-        raise ValueError(
-            f"Unable to parse all values in '{date_col}' into valid datetimes."
-        )
+    enriched_df[date_col] = _normalize_date_column(enriched_df, date_col)
 
     for measure_col in ["daily_views", "unique_viewers"]:
         if not pd.api.types.is_numeric_dtype(enriched_df[measure_col]):

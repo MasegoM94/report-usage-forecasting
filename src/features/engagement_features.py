@@ -6,30 +6,7 @@ import math
 
 import pandas as pd
 
-
-def _validate_input_columns(df: pd.DataFrame, required_columns: list[str]) -> None:
-    """Raise a helpful error when required columns are missing."""
-    missing_columns = [column for column in required_columns if column not in df.columns]
-    if missing_columns:
-        missing_list = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Missing required columns: {missing_list}")
-
-
-def _coerce_to_datetime(date_series: pd.Series) -> pd.Series:
-    """Convert a date-like series to pandas datetime values."""
-    if pd.api.types.is_datetime64_any_dtype(date_series):
-        return pd.to_datetime(date_series, errors="coerce")
-
-    if pd.api.types.is_numeric_dtype(date_series):
-        parsed_dates = pd.to_datetime(
-            date_series.astype("Int64").astype(str),
-            format="%Y%m%d",
-            errors="coerce",
-        )
-        if parsed_dates.notna().any():
-            return parsed_dates
-
-    return pd.to_datetime(date_series, errors="coerce")
+from src.features._common import _normalize_date_column, _validate_input_columns
 
 
 def build_user_engagement_features(
@@ -90,17 +67,8 @@ def build_user_engagement_features(
     report_views_df = fact_report_views.copy()
     page_views_df = fact_page_views.copy()
 
-    report_views_df["date"] = _coerce_to_datetime(report_views_df[date_col]).dt.normalize()
-    page_views_df["date"] = _coerce_to_datetime(page_views_df[date_col]).dt.normalize()
-
-    if report_views_df["date"].isna().any():
-        raise ValueError(
-            f"Unable to parse all values in '{date_col}' from fact_report_views."
-        )
-    if page_views_df["date"].isna().any():
-        raise ValueError(
-            f"Unable to parse all values in '{date_col}' from fact_page_views."
-        )
+    report_views_df["date"] = _normalize_date_column(report_views_df, date_col)
+    page_views_df["date"] = _normalize_date_column(page_views_df, date_col)
 
     report_views_df["report_id"] = report_views_df[report_col]
     report_views_df["user_id"] = report_views_df[user_col]
