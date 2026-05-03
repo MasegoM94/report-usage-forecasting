@@ -20,6 +20,22 @@ data/*
 !data/.gitkeep
 outputs/*
 !outputs/.gitkeep
+!outputs/forecasts/
+outputs/forecasts/*
+!outputs/forecasts/.gitkeep
+!outputs/forecasts/sample_baseline_forecasts.csv
+!outputs/metrics/
+outputs/metrics/*
+!outputs/metrics/.gitkeep
+!outputs/anomalies/
+outputs/anomalies/*
+!outputs/anomalies/.gitkeep
+!outputs/segments/
+outputs/segments/*
+!outputs/segments/.gitkeep
+!outputs/diagnostics/
+outputs/diagnostics/*
+!outputs/diagnostics/.gitkeep
 
 # Local environment files
 .env
