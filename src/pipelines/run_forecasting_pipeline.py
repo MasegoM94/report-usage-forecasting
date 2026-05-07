@@ -1,4 +1,9 @@
-"""Run the Day 1 baseline forecasting pipeline.
+"""Run the report usage forecasting baseline pipeline.
+
+This script mirrors the production-facing flow in
+``notebooks/05_forecasting_baseline.ipynb``: load the processed forecasting
+feature mart, run per-report data sufficiency checks, compare SARIMA against
+simple baselines, and publish latest plus history outputs.
 
 Usage:
     python -m src.pipelines.run_forecasting_pipeline
@@ -6,21 +11,74 @@ Usage:
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
+from typing import Optional
 
+import numpy as np
 import pandas as pd
-
-from src.models.baselines import (
-    moving_average_forecast,
-    naive_forecast,
-    seasonal_naive_forecast,
-)
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
-DATE_COL = "date"
-REPORT_ID_COL = "report_id"
-TARGET_COL = "daily_views"
-REQUIRED_COLUMNS = {DATE_COL, REPORT_ID_COL, TARGET_COL}
+DATE_COL = "Date"
+REPORT_ID_COL = "Report Guid"
+REPORT_NAME_COL = "Report Name"
+USER_COL = "User Id"
+VIEWS_COL = "Occurrences"
+
+STANDARD_DATE_COL = "date"
+STANDARD_REPORT_ID_COL = "report_id"
+STANDARD_TARGET_COL = "daily_views"
+REQUIRED_FEATURE_COLUMNS = {
+    STANDARD_DATE_COL,
+    STANDARD_REPORT_ID_COL,
+    STANDARD_TARGET_COL,
+}
+
+SEASONALITY_DAYS = 7
+MIN_DAYS = 90
+MIN_NONZERO_DAYS = 35
+MIN_NONZERO_RATIO = 0.25
+MIN_TOTAL_VIEWS = 120
+
+TRAIN_TEST_FRACTION = 0.8
+FORECAST_HORIZON_DAYS = 30
+MAX_MAE_RATIO_TO_MEAN = 0.6
+MAX_SELECTED_WAPE = 0.75
+MAX_ZERO_SHARE = 0.75
+MAE_TIE_TOLERANCE = 0.01
+
+MODEL_NAME = "AutoARIMA_m7_daily_report_views"
+
+EXPECTED_FORECAST_COLUMNS = [
+    DATE_COL,
+    "forecast",
+    "lower_ci",
+    "upper_ci",
+    "actual",
+    "error",
+    "abs_error",
+    "pct_error",
+    "ReportId",
+    "ReportName",
+    "IsForecast",
+    "ModelRunTimestamp",
+    "ModelName",
+    "run_id",
+    "run_timestamp",
+    "IsPlaceholderRow",
+]
+
+EXPECTED_MODEL_COMPARISON_COLUMNS = [
+    "report_id",
+    "report_name",
+    "model_name",
+    "mae",
+    "rmse",
+    "wape",
+    "selected_model_flag",
+    "forecast_reliable",
+]
 
 
 def get_project_root() -> Path:
@@ -28,66 +86,907 @@ def get_project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def load_feature_mart(feature_path: Path) -> pd.DataFrame:
-    """Load and validate the processed forecasting feature mart."""
-    if not feature_path.exists():
-        raise FileNotFoundError(
-            f"Feature mart not found at {feature_path}. "
-            "Run notebooks/04_feature_engineering.ipynb before this pipeline."
-        )
+def list_processed_csvs(processed_dir: Path) -> list[Path]:
+    """Return available processed CSV files for transparent fallback selection."""
+    return sorted(processed_dir.glob("*.csv"))
 
-    df = pd.read_csv(feature_path, parse_dates=[DATE_COL])
-    missing_columns = REQUIRED_COLUMNS - set(df.columns)
+
+def choose_forecasting_input(processed_dir: Path) -> Path:
+    """Choose the best available processed report-level daily forecasting input."""
+    preferred_candidates = [
+        processed_dir / "mart_forecast_features.csv",
+        processed_dir / "mart_report_daily_adoption_ts_features.csv",
+        processed_dir / "mart_report_daily_adoption.csv",
+        processed_dir / "fact_report_views.csv",
+    ]
+
+    for candidate in preferred_candidates:
+        if candidate.exists():
+            return candidate
+
+    available = "\n".join(str(path) for path in list_processed_csvs(processed_dir))
+    raise FileNotFoundError(
+        "No suitable processed forecasting input was found. "
+        "Run the upstream data and feature-engineering notebooks first.\n\n"
+        f"Available processed CSVs:\n{available or 'No processed CSV files found.'}"
+    )
+
+
+def standardise_forecasting_columns(
+    df: pd.DataFrame,
+    source_path: Path,
+    date_dim_path: Path,
+) -> pd.DataFrame:
+    """Standardise a processed table to date, report_id, and daily_views."""
+    standardised = df.copy()
+    rename_map = {}
+
+    if "Date" in standardised.columns and STANDARD_DATE_COL not in standardised.columns:
+        rename_map["Date"] = STANDARD_DATE_COL
+    if "Report Guid" in standardised.columns and STANDARD_REPORT_ID_COL not in standardised.columns:
+        rename_map["Report Guid"] = STANDARD_REPORT_ID_COL
+    if "ReportId" in standardised.columns and STANDARD_REPORT_ID_COL not in standardised.columns:
+        rename_map["ReportId"] = STANDARD_REPORT_ID_COL
+    if "Occurrences" in standardised.columns and STANDARD_TARGET_COL not in standardised.columns:
+        rename_map["Occurrences"] = STANDARD_TARGET_COL
+    if "view_count" in standardised.columns and STANDARD_TARGET_COL not in standardised.columns:
+        rename_map["view_count"] = STANDARD_TARGET_COL
+    if "views" in standardised.columns and STANDARD_TARGET_COL not in standardised.columns:
+        rename_map["views"] = STANDARD_TARGET_COL
+
+    if rename_map:
+        standardised = standardised.rename(columns=rename_map)
+
+    if STANDARD_DATE_COL not in standardised.columns and "date_key" in standardised.columns:
+        if not date_dim_path.exists():
+            raise FileNotFoundError(
+                f"{source_path.name} uses date_key, but {date_dim_path} was not found."
+            )
+        dim_date = pd.read_csv(date_dim_path, usecols=["date_key", "date"])
+        standardised = standardised.merge(dim_date, on="date_key", how="left")
+
+    missing_columns = REQUIRED_FEATURE_COLUMNS - set(standardised.columns)
     if missing_columns:
         raise ValueError(
-            f"Feature mart is missing required columns: {sorted(missing_columns)}"
+            f"{source_path.name} is missing required forecasting columns after "
+            f"standardisation: {sorted(missing_columns)}"
         )
 
+    standardised = standardised[
+        [STANDARD_DATE_COL, STANDARD_REPORT_ID_COL, STANDARD_TARGET_COL]
+    ].copy()
+    standardised[STANDARD_DATE_COL] = pd.to_datetime(
+        standardised[STANDARD_DATE_COL],
+        errors="coerce",
+    )
+    standardised[STANDARD_TARGET_COL] = pd.to_numeric(
+        standardised[STANDARD_TARGET_COL],
+        errors="coerce",
+    ).fillna(0)
+    standardised = standardised.dropna(subset=[STANDARD_DATE_COL, STANDARD_REPORT_ID_COL])
+
+    return (
+        standardised.groupby(
+            [STANDARD_DATE_COL, STANDARD_REPORT_ID_COL],
+            as_index=False,
+        )[STANDARD_TARGET_COL]
+        .sum()
+        .sort_values([STANDARD_DATE_COL, STANDARD_REPORT_ID_COL])
+    )
+
+
+def adapt_to_forecasting_schema(features: pd.DataFrame, report_dim_path: Path) -> pd.DataFrame:
+    """Map standard processed feature columns into the notebook forecasting schema."""
+    model_input = features.copy()
+
+    if report_dim_path.exists():
+        report_names = pd.read_csv(report_dim_path, usecols=["report_id", "report_name"])
+        model_input = model_input.merge(report_names, on=STANDARD_REPORT_ID_COL, how="left")
+    else:
+        model_input["report_name"] = model_input[STANDARD_REPORT_ID_COL]
+
+    model_input["report_name"] = model_input["report_name"].fillna(
+        model_input[STANDARD_REPORT_ID_COL]
+    )
+    model_input["synthetic_user_id"] = "PROCESSED_DAILY_TOTAL"
+
+    model_input = model_input.rename(
+        columns={
+            STANDARD_DATE_COL: DATE_COL,
+            STANDARD_REPORT_ID_COL: REPORT_ID_COL,
+            "report_name": REPORT_NAME_COL,
+            STANDARD_TARGET_COL: VIEWS_COL,
+            "synthetic_user_id": USER_COL,
+        }
+    )
+    model_input[VIEWS_COL] = pd.to_numeric(model_input[VIEWS_COL], errors="coerce").fillna(0)
+    model_input[DATE_COL] = pd.to_datetime(model_input[DATE_COL])
+
+    return model_input[
+        [DATE_COL, REPORT_ID_COL, REPORT_NAME_COL, USER_COL, VIEWS_COL]
+    ].sort_values([DATE_COL, REPORT_ID_COL])
+
+
+def load_forecast_feature_input(project_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
+    """Load processed forecasting input and return standard plus modelling schemas."""
+    processed_dir = project_root / "data" / "processed"
+    input_path = choose_forecasting_input(processed_dir)
+
+    features_raw = pd.read_csv(input_path)
+    forecast_features = standardise_forecasting_columns(
+        features_raw,
+        input_path,
+        processed_dir / "dim_date.csv",
+    )
+    model_input = adapt_to_forecasting_schema(
+        forecast_features,
+        processed_dir / "dim_report.csv",
+    )
+    return forecast_features, model_input.reset_index(drop=True), input_path
+
+
+def run_data_quality_checks(df: pd.DataFrame) -> pd.DataFrame:
+    """Return lightweight input checks used by the notebook baseline."""
+    checks = [{"check": "row_count", "value": len(df), "status": "ok" if len(df) else "fail"}]
+
+    for col in [DATE_COL, REPORT_ID_COL, REPORT_NAME_COL, USER_COL, VIEWS_COL]:
+        null_count = int(df[col].isna().sum())
+        checks.append(
+            {
+                "check": f"nulls_{col}",
+                "value": null_count,
+                "status": "ok" if null_count == 0 else "warn",
+            }
+        )
+
+    duplicate_count = int(
+        df.duplicated(subset=[DATE_COL, REPORT_ID_COL, REPORT_NAME_COL, USER_COL, VIEWS_COL]).sum()
+    )
+    checks.append(
+        {
+            "check": "exact_duplicate_rows",
+            "value": duplicate_count,
+            "status": "ok" if duplicate_count == 0 else "warn",
+        }
+    )
+    checks.append({"check": "min_date", "value": str(df[DATE_COL].min().date()), "status": "ok"})
+    checks.append({"check": "max_date", "value": str(df[DATE_COL].max().date()), "status": "ok"})
+    negative_occurrences = int((df[VIEWS_COL] < 0).sum())
+    checks.append(
+        {
+            "check": "negative_occurrences",
+            "value": negative_occurrences,
+            "status": "ok" if negative_occurrences == 0 else "fail",
+        }
+    )
+    return pd.DataFrame(checks)
+
+
+def build_daily_series_for_all_reports(
+    df: pd.DataFrame,
+) -> tuple[dict[str, pd.Series], dict[str, str]]:
+    """Build gap-filled daily report usage series."""
+    d = df.copy()
+    d[DATE_COL] = pd.to_datetime(d[DATE_COL])
+    d[VIEWS_COL] = pd.to_numeric(d[VIEWS_COL], errors="coerce").fillna(0)
+
+    series_dict: dict[str, pd.Series] = {}
+    name_lookup: dict[str, str] = {}
+    for rid, group in d.groupby(REPORT_ID_COL):
+        name_lookup[str(rid)] = str(group[REPORT_NAME_COL].iloc[0])
+        daily = group.groupby(DATE_COL)[VIEWS_COL].sum().rename("Views").sort_index()
+        full_index = pd.date_range(daily.index.min(), daily.index.max(), freq="D")
+        daily_full = daily.reindex(full_index, fill_value=0)
+        daily_full.index.name = DATE_COL
+        series_dict[str(rid)] = daily_full
+
+    return series_dict, name_lookup
+
+
+def filter_by_data_criteria(
+    series_dict: dict[str, pd.Series],
+) -> tuple[list[str], pd.DataFrame]:
+    """Apply report-level history sufficiency checks."""
+    records = []
+    passing = []
+
+    for rid, series in series_dict.items():
+        total_days = int(series.size)
+        nonzero_days = int((series > 0).sum())
+        nonzero_ratio = nonzero_days / total_days if total_days else 0.0
+        total_views = int(series.sum())
+        passes = (
+            total_days >= MIN_DAYS
+            and nonzero_days >= MIN_NONZERO_DAYS
+            and nonzero_ratio >= MIN_NONZERO_RATIO
+            and total_views >= MIN_TOTAL_VIEWS
+        )
+
+        records.append(
+            {
+                "report_id": rid,
+                "total_days": total_days,
+                "nonzero_days": nonzero_days,
+                "nonzero_ratio": nonzero_ratio,
+                "zero_share": 1 - nonzero_ratio,
+                "total_views": total_views,
+                "passes_min_days": total_days >= MIN_DAYS,
+                "passes_min_nonzero_days": nonzero_days >= MIN_NONZERO_DAYS,
+                "passes_nonzero_ratio": nonzero_ratio >= MIN_NONZERO_RATIO,
+                "passes_total_views": total_views >= MIN_TOTAL_VIEWS,
+                "passes_data_criteria": passes,
+            }
+        )
+        if passes:
+            passing.append(rid)
+
+    return passing, pd.DataFrame.from_records(records)
+
+
+def naive_forecast_last_value(y_train: pd.Series, steps: int) -> np.ndarray:
+    """Forecast future values as the latest observed value."""
+    return np.full(shape=steps, fill_value=float(y_train.iloc[-1]), dtype=float)
+
+
+def seasonal_naive_forecast(y_train: pd.Series, steps: int) -> np.ndarray:
+    """Forecast future values by repeating the latest weekly pattern."""
+    if len(y_train) < SEASONALITY_DAYS:
+        return naive_forecast_last_value(y_train, steps)
+
+    last_season = y_train.iloc[-SEASONALITY_DAYS:].to_numpy(dtype=float)
+    repeats = int(np.ceil(steps / SEASONALITY_DAYS))
+    return np.tile(last_season, repeats)[:steps]
+
+
+def wape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Return weighted absolute percentage error."""
+    denom = np.abs(y_true).sum()
+    if denom == 0:
+        return np.nan
+    return float(np.abs(y_true - y_pred).sum() / denom)
+
+
+def build_forecast_frame(
+    index: pd.DatetimeIndex,
+    forecast_values: np.ndarray,
+    actual_values: Optional[np.ndarray] = None,
+    lower_ci: Optional[np.ndarray] = None,
+    upper_ci: Optional[np.ndarray] = None,
+) -> pd.DataFrame:
+    """Build a forecast frame with error columns."""
+    forecast_values = np.clip(np.asarray(forecast_values, dtype=float), 0, None)
+    if actual_values is None:
+        actual_values = np.full(len(forecast_values), np.nan)
+    if lower_ci is None:
+        lower_ci = np.full(len(forecast_values), np.nan)
+    if upper_ci is None:
+        upper_ci = np.full(len(forecast_values), np.nan)
+
+    df = pd.DataFrame(
+        {
+            "forecast": forecast_values,
+            "lower_ci": lower_ci,
+            "upper_ci": upper_ci,
+            "actual": actual_values,
+        },
+        index=index,
+    )
+    df["error"] = df["actual"] - df["forecast"]
+    df["abs_error"] = df["error"].abs()
+    df["pct_error"] = (df["abs_error"] / df["actual"].replace(0, np.nan)) * 100
     return df
 
 
-def select_sample_report(df: pd.DataFrame) -> str:
-    """Select one report with enough non-null history for a smoke-test forecast."""
-    valid_rows = df.dropna(subset=[DATE_COL, REPORT_ID_COL, TARGET_COL]).copy()
-    if valid_rows.empty:
-        raise ValueError("No valid rows found in the feature mart.")
-
-    report_counts = valid_rows.groupby(REPORT_ID_COL).size().sort_values(ascending=False)
-    if report_counts.empty:
-        raise ValueError("No valid report_id values found in the feature mart.")
-
-    return str(report_counts.index[0])
-
-
-def run_pipeline(horizon: int = 30) -> Path:
-    """Run baseline forecasts for one sample report and save the combined output."""
-    project_root = get_project_root()
-    feature_path = project_root / "data" / "processed" / "mart_forecast_features.csv"
-    output_path = project_root / "outputs" / "forecasts" / "sample_baseline_forecasts.csv"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    feature_mart = load_feature_mart(feature_path)
-    report_id = select_sample_report(feature_mart)
-
-    report_history = (
-        feature_mart.loc[feature_mart[REPORT_ID_COL].astype(str) == report_id]
-        .sort_values(DATE_COL)
-        .copy()
-    )
-
-    forecasts = pd.concat(
+def build_model_comparison(metrics: dict) -> pd.DataFrame:
+    """Build per-model metric rows for selected-model inspection."""
+    comparison = pd.DataFrame.from_records(
         [
-            naive_forecast(report_history, horizon=horizon),
-            moving_average_forecast(report_history, horizon=horizon, window=7),
-            seasonal_naive_forecast(report_history, horizon=horizon, season_length=7),
-        ],
-        ignore_index=True,
+            {
+                "model_name": "naive",
+                "mae": metrics.get("mae_naive"),
+                "rmse": metrics.get("rmse_naive"),
+                "wape": metrics.get("wape_naive"),
+            },
+            {
+                "model_name": "seasonal_naive",
+                "mae": metrics.get("mae_seasonal_naive"),
+                "rmse": metrics.get("rmse_seasonal_naive"),
+                "wape": metrics.get("wape_seasonal_naive"),
+            },
+            {
+                "model_name": "sarima",
+                "mae": metrics.get("mae_arima"),
+                "rmse": metrics.get("rmse_arima"),
+                "wape": metrics.get("wape_arima"),
+            },
+        ]
     )
-    forecasts.insert(0, REPORT_ID_COL, report_id)
+    return comparison.dropna(subset=["mae", "rmse"], how="any").copy()
 
-    forecasts.to_csv(output_path, index=False)
-    print(f"Saved sample baseline forecasts to: {output_path}")
-    return output_path
+
+def select_best_model(comparison: pd.DataFrame) -> Optional[pd.Series]:
+    """Select best model by MAE, then RMSE for near ties."""
+    if comparison.empty:
+        return None
+
+    best_mae = comparison["mae"].min()
+    ranked = comparison[comparison["mae"] <= best_mae + MAE_TIE_TOLERANCE]
+    ranked = ranked.sort_values(["rmse", "mae", "model_name"], ascending=[True, True, True])
+    return ranked.iloc[0]
+
+
+def apply_reliability_checks(metrics: dict) -> dict:
+    """Apply notebook reliability gates to selected forecasts."""
+    selected_mae = metrics.get("selected_mae")
+    selected_wape = metrics.get("selected_wape")
+    avg_level = metrics.get("avg_level_test")
+    zero_share = metrics.get("zero_share")
+
+    passes_wape = pd.notna(selected_wape) and selected_wape <= MAX_SELECTED_WAPE
+    passes_mae_ratio = (
+        pd.isna(avg_level)
+        or avg_level == 0
+        or selected_mae <= MAX_MAE_RATIO_TO_MEAN * avg_level
+    )
+    passes_zero_share = pd.isna(zero_share) or zero_share <= MAX_ZERO_SHARE
+    has_selected_model = pd.notna(metrics.get("selected_model"))
+
+    metrics["passes_wape_reliability"] = bool(passes_wape)
+    metrics["passes_mae_ratio"] = bool(passes_mae_ratio)
+    metrics["passes_zero_share"] = bool(passes_zero_share)
+    metrics["passes_model_criteria"] = bool(has_selected_model and passes_mae_ratio)
+    metrics["forecast_reliable"] = bool(
+        has_selected_model
+        and metrics.get("passes_data_criteria", False)
+        and passes_mae_ratio
+        and passes_wape
+        and passes_zero_share
+    )
+    return metrics
+
+
+def train_and_evaluate_arima(
+    y: pd.Series,
+    horizon_days: int,
+) -> tuple[dict[str, pd.DataFrame], dict, pd.DataFrame]:
+    """Train SARIMA, compare baselines, and return forecast frames plus metrics."""
+    from pmdarima import auto_arima
+
+    y = y.astype(float)
+    train_size = int(len(y) * TRAIN_TEST_FRACTION)
+    if train_size < 30 or len(y) - train_size < 7:
+        raise ValueError("Series too short for robust backtest split")
+
+    y_train = y.iloc[:train_size]
+    y_test = y.iloc[train_size:]
+    n_test = len(y_test)
+
+    model = auto_arima(
+        y_train,
+        seasonal=True,
+        m=SEASONALITY_DAYS,
+        stepwise=True,
+        suppress_warnings=True,
+        error_action="ignore",
+        trace=False,
+    )
+
+    fc_test, conf_test = model.predict(n_periods=n_test, return_conf_int=True)
+    fc_test = np.clip(fc_test, 0, None)
+    conf_test = np.clip(np.asarray(conf_test, dtype=float), 0, None)
+
+    naive_fc = naive_forecast_last_value(y_train, n_test)
+    seasonal_naive_fc = seasonal_naive_forecast(y_train, n_test)
+
+    model.update(y_test)
+    fc_future, conf_future = model.predict(n_periods=horizon_days, return_conf_int=True)
+    fc_future = np.clip(fc_future, 0, None)
+    conf_future = np.clip(np.asarray(conf_future, dtype=float), 0, None)
+
+    future_dates = pd.date_range(
+        start=y.index[-1] + pd.Timedelta(days=1),
+        periods=horizon_days,
+        freq="D",
+    )
+
+    model_forecasts = {
+        "sarima": pd.concat(
+            [
+                build_forecast_frame(
+                    y_test.index,
+                    fc_test,
+                    actual_values=y_test.values,
+                    lower_ci=conf_test[:, 0],
+                    upper_ci=conf_test[:, 1],
+                ),
+                build_forecast_frame(
+                    future_dates,
+                    fc_future,
+                    lower_ci=conf_future[:, 0],
+                    upper_ci=conf_future[:, 1],
+                ),
+            ]
+        ),
+        "naive": pd.concat(
+            [
+                build_forecast_frame(y_test.index, naive_fc, actual_values=y_test.values),
+                build_forecast_frame(future_dates, naive_forecast_last_value(y, horizon_days)),
+            ]
+        ),
+        "seasonal_naive": pd.concat(
+            [
+                build_forecast_frame(
+                    y_test.index,
+                    seasonal_naive_fc,
+                    actual_values=y_test.values,
+                ),
+                build_forecast_frame(future_dates, seasonal_naive_forecast(y, horizon_days)),
+            ]
+        ),
+    }
+    for forecast_df in model_forecasts.values():
+        forecast_df.index.name = DATE_COL
+
+    p, d, q = model.order
+    seasonal_p, seasonal_d, seasonal_q, m = model.seasonal_order
+
+    metrics = {
+        "n_obs": len(y),
+        "n_train": len(y_train),
+        "n_test": len(y_test),
+        "mae_arima": mean_absolute_error(y_test, fc_test),
+        "rmse_arima": np.sqrt(mean_squared_error(y_test, fc_test)),
+        "wape_arima": wape(y_test.to_numpy(), fc_test),
+        "mae_naive": mean_absolute_error(y_test, naive_fc),
+        "rmse_naive": np.sqrt(mean_squared_error(y_test, naive_fc)),
+        "wape_naive": wape(y_test.to_numpy(), naive_fc),
+        "mae_seasonal_naive": mean_absolute_error(y_test, seasonal_naive_fc),
+        "rmse_seasonal_naive": np.sqrt(mean_squared_error(y_test, seasonal_naive_fc)),
+        "wape_seasonal_naive": wape(y_test.to_numpy(), seasonal_naive_fc),
+        "avg_level_test": y_test.mean(),
+        "p": p,
+        "d": d,
+        "q": q,
+        "P": seasonal_p,
+        "D": seasonal_d,
+        "Q": seasonal_q,
+        "m": m,
+        "model_str": f"ARIMA({p},{d},{q})x({seasonal_p},{seasonal_d},{seasonal_q},{m})",
+    }
+    metrics["mae_improvement_vs_naive"] = (
+        1 - metrics["mae_arima"] / metrics["mae_naive"]
+        if metrics["mae_naive"] > 0
+        else np.nan
+    )
+    metrics["mae_improvement_vs_seasonal_naive"] = (
+        1 - metrics["mae_arima"] / metrics["mae_seasonal_naive"]
+        if metrics["mae_seasonal_naive"] > 0
+        else np.nan
+    )
+
+    model_comparison = build_model_comparison(metrics)
+    selected = select_best_model(model_comparison)
+    if selected is not None:
+        metrics.update(
+            {
+                "selected_model": selected["model_name"],
+                "selected_mae": selected["mae"],
+                "selected_rmse": selected["rmse"],
+                "selected_wape": selected["wape"],
+            }
+        )
+        model_comparison["selected_model_flag"] = model_comparison["model_name"].eq(
+            selected["model_name"]
+        )
+    else:
+        metrics.update(
+            {
+                "selected_model": pd.NA,
+                "selected_mae": np.nan,
+                "selected_rmse": np.nan,
+                "selected_wape": np.nan,
+            }
+        )
+        model_comparison["selected_model_flag"] = False
+
+    return model_forecasts, metrics, model_comparison
+
+
+def run_forecasts_for_reports(
+    raw_df: pd.DataFrame,
+    run_id: str,
+    run_timestamp: pd.Timestamp,
+    horizon_days: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Run forecasting for every report that passes data checks."""
+    series_dict, name_lookup = build_daily_series_for_all_reports(raw_df)
+    passing_data_ids, data_diag = filter_by_data_criteria(series_dict)
+
+    all_forecasts = []
+    all_metrics = []
+    all_model_comparisons = []
+
+    for rid in passing_data_ids:
+        model_forecasts = {}
+        model_comparison = pd.DataFrame()
+        name = name_lookup.get(rid, "")
+
+        try:
+            model_forecasts, metrics, model_comparison = train_and_evaluate_arima(
+                series_dict[rid],
+                horizon_days=horizon_days,
+            )
+        except Exception as exc:
+            metrics = {
+                "n_obs": len(series_dict[rid]),
+                "n_train": np.nan,
+                "n_test": np.nan,
+                "mae_arima": np.nan,
+                "rmse_arima": np.nan,
+                "wape_arima": np.nan,
+                "mae_naive": np.nan,
+                "rmse_naive": np.nan,
+                "wape_naive": np.nan,
+                "mae_seasonal_naive": np.nan,
+                "rmse_seasonal_naive": np.nan,
+                "wape_seasonal_naive": np.nan,
+                "avg_level_test": np.nan,
+                "selected_model": pd.NA,
+                "selected_mae": np.nan,
+                "selected_rmse": np.nan,
+                "selected_wape": np.nan,
+                "passes_model_criteria": False,
+                "forecast_reliable": False,
+                "error": str(exc),
+            }
+
+        metrics["report_id"] = rid
+        metrics["report_name"] = name
+        diag_row = data_diag.loc[data_diag["report_id"] == rid].iloc[0]
+        metrics.update(diag_row.to_dict())
+        metrics = apply_reliability_checks(metrics)
+        all_metrics.append(metrics)
+
+        if not model_comparison.empty:
+            comparison_out = model_comparison.copy()
+            comparison_out.insert(0, "report_id", rid)
+            comparison_out.insert(1, "report_name", name)
+            comparison_out["forecast_reliable"] = metrics["forecast_reliable"]
+            all_model_comparisons.append(comparison_out)
+
+        selected_model = metrics.get("selected_model")
+        if (
+            isinstance(selected_model, str)
+            and selected_model in model_forecasts
+            and metrics["forecast_reliable"]
+        ):
+            forecast_out = model_forecasts[selected_model].copy().reset_index()
+            forecast_out["ReportId"] = rid
+            forecast_out["ReportName"] = name
+            forecast_out["IsForecast"] = forecast_out["actual"].isna().astype(int)
+            forecast_out["ModelRunTimestamp"] = run_timestamp
+            forecast_out["ModelName"] = selected_model
+            forecast_out["run_id"] = run_id
+            forecast_out["run_timestamp"] = run_timestamp
+            forecast_out["IsPlaceholderRow"] = 0
+            all_forecasts.append(forecast_out)
+
+    forecast_table = (
+        pd.concat(all_forecasts, ignore_index=True)
+        if all_forecasts
+        else pd.DataFrame()
+    )
+    metrics_table = pd.DataFrame(all_metrics)
+    model_comparison_table = (
+        pd.concat(all_model_comparisons, ignore_index=True)
+        if all_model_comparisons
+        else pd.DataFrame()
+    )
+    return forecast_table, metrics_table, data_diag, model_comparison_table
+
+
+def ensure_forecast_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Return forecast output in the notebook's stable CSV schema."""
+    for col in EXPECTED_FORECAST_COLUMNS:
+        if col not in df.columns:
+            if col == DATE_COL:
+                df[col] = pd.NaT
+            elif col in {"IsForecast", "IsPlaceholderRow"}:
+                df[col] = 0
+            elif col in {"ReportId", "ReportName", "ModelName", "run_id"}:
+                df[col] = pd.NA
+            elif col in {"ModelRunTimestamp", "run_timestamp"}:
+                df[col] = pd.NaT
+            else:
+                df[col] = pd.NA
+    return df[EXPECTED_FORECAST_COLUMNS]
+
+
+def make_placeholder_forecast_row(
+    run_id: str,
+    run_timestamp: pd.Timestamp,
+) -> pd.DataFrame:
+    """Create a schema-safe latest forecast file when no report is forecastable."""
+    row = {
+        DATE_COL: pd.Timestamp("1900-01-01"),
+        "forecast": pd.NA,
+        "lower_ci": pd.NA,
+        "upper_ci": pd.NA,
+        "actual": pd.NA,
+        "error": pd.NA,
+        "abs_error": pd.NA,
+        "pct_error": pd.NA,
+        "ReportId": pd.NA,
+        "ReportName": "NO_FORECAST",
+        "IsForecast": 1,
+        "ModelRunTimestamp": run_timestamp,
+        "ModelName": MODEL_NAME,
+        "run_id": run_id,
+        "run_timestamp": run_timestamp,
+        "IsPlaceholderRow": 1,
+    }
+    return pd.DataFrame([row])[EXPECTED_FORECAST_COLUMNS]
+
+
+def ensure_model_comparison_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Return model comparison output in a stable CSV schema."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=EXPECTED_MODEL_COMPARISON_COLUMNS)
+    for col in EXPECTED_MODEL_COMPARISON_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return df[EXPECTED_MODEL_COMPARISON_COLUMNS]
+
+
+def save_latest_outputs(
+    forecast_table: pd.DataFrame,
+    metrics_table: pd.DataFrame,
+    model_comparison_table: pd.DataFrame,
+    project_root: Path,
+    run_id: str,
+    run_timestamp: pd.Timestamp,
+) -> tuple[Path, Path, Path]:
+    """Save latest forecasts, metrics, and model comparison files."""
+    forecast_output_dir = project_root / "outputs" / "forecasts"
+    metrics_output_dir = project_root / "outputs" / "metrics"
+    forecast_output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_output_dir.mkdir(parents=True, exist_ok=True)
+
+    if forecast_table is None or forecast_table.empty:
+        forecast_table = make_placeholder_forecast_row(run_id, run_timestamp)
+    forecast_table = ensure_forecast_schema(forecast_table)
+    model_comparison_table = ensure_model_comparison_schema(model_comparison_table)
+
+    latest_forecast_file = forecast_output_dir / "report_view_forecasts_latest.csv"
+    latest_metrics_file = metrics_output_dir / "report_view_metrics_latest.csv"
+    latest_model_comparison_file = metrics_output_dir / "report_model_comparison_latest.csv"
+
+    forecast_table.to_csv(latest_forecast_file, index=False)
+    metrics_table.to_csv(latest_metrics_file, index=False)
+    model_comparison_table.to_csv(latest_model_comparison_file, index=False)
+    return latest_forecast_file, latest_metrics_file, latest_model_comparison_file
+
+
+def append_forecasts_history(
+    forecast_table: pd.DataFrame,
+    project_root: Path,
+) -> Optional[Path]:
+    """Append future forecast rows to the long-running forecast history."""
+    if forecast_table is None or forecast_table.empty:
+        return None
+
+    df_future = forecast_table[forecast_table["IsForecast"] == 1].copy()
+    if df_future.empty:
+        return None
+
+    df_future[DATE_COL] = pd.to_datetime(df_future[DATE_COL], errors="coerce")
+    df_future["ModelRunTimestamp"] = pd.to_datetime(
+        df_future["ModelRunTimestamp"],
+        errors="coerce",
+    )
+    df_future["target_date"] = df_future[DATE_COL]
+    df_future["horizon_days"] = (
+        df_future["target_date"].dt.normalize()
+        - df_future["ModelRunTimestamp"].dt.normalize()
+    ).dt.days
+
+    df_out = df_future[
+        [
+            "run_id",
+            "run_timestamp",
+            "ReportId",
+            "ReportName",
+            "target_date",
+            "horizon_days",
+            "forecast",
+            "lower_ci",
+            "upper_ci",
+            "ModelName",
+        ]
+    ].rename(
+        columns={
+            "ReportId": "report_id",
+            "ReportName": "report_name",
+            "forecast": "forecast_views",
+            "ModelName": "model_name",
+        }
+    )
+
+    history_file = project_root / "outputs" / "forecasts" / "forecasts_history.csv"
+    write_header = not history_file.exists()
+    df_out.to_csv(history_file, mode="a", index=False, header=write_header)
+    return history_file
+
+
+def append_metrics_history(
+    metrics_table: pd.DataFrame,
+    project_root: Path,
+    run_id: str,
+    run_timestamp: pd.Timestamp,
+) -> Optional[Path]:
+    """Append this run's metrics to the long-running metrics history."""
+    if metrics_table.empty:
+        return None
+
+    df = metrics_table.copy()
+    df["run_id"] = run_id
+    df["run_timestamp"] = run_timestamp
+
+    history_file = project_root / "outputs" / "metrics" / "metrics_history.csv"
+    write_header = not history_file.exists()
+    df.to_csv(history_file, mode="a", index=False, header=write_header)
+    return history_file
+
+
+def compute_daily_actuals(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute daily report actuals for realised-error backfill."""
+    d = raw_df.copy()
+    d[DATE_COL] = pd.to_datetime(d[DATE_COL])
+    d[VIEWS_COL] = pd.to_numeric(d[VIEWS_COL], errors="coerce").fillna(0)
+    grouped = (
+        d.groupby([REPORT_ID_COL, REPORT_NAME_COL, DATE_COL])[VIEWS_COL]
+        .sum()
+        .reset_index(name="actual_views")
+    )
+    return grouped.rename(
+        columns={
+            REPORT_ID_COL: "report_id",
+            REPORT_NAME_COL: "report_name",
+            DATE_COL: "date",
+        }
+    )
+
+
+def update_realized_errors(raw_df: pd.DataFrame, project_root: Path) -> pd.DataFrame:
+    """Backfill actual errors for historical forecasts whose dates have arrived."""
+    forecasts_history_file = project_root / "outputs" / "forecasts" / "forecasts_history.csv"
+    realized_errors_file = project_root / "outputs" / "metrics" / "realized_errors_history.csv"
+    if not forecasts_history_file.exists():
+        return pd.DataFrame()
+
+    forecasts_hist = pd.read_csv(
+        forecasts_history_file,
+        parse_dates=["run_timestamp", "target_date"],
+    )
+    if forecasts_hist.empty:
+        return pd.DataFrame()
+
+    actuals = compute_daily_actuals(raw_df)
+    actuals["date"] = pd.to_datetime(actuals["date"])
+    actuals = actuals[["report_id", "date", "actual_views"]]
+
+    merged = forecasts_hist.merge(
+        actuals,
+        left_on=["report_id", "target_date"],
+        right_on=["report_id", "date"],
+        how="left",
+    )
+    merged = merged[~merged["actual_views"].isna()].copy()
+    if merged.empty:
+        return pd.DataFrame()
+
+    if realized_errors_file.exists():
+        existing = pd.read_csv(realized_errors_file, parse_dates=["target_date"])
+        if not existing.empty:
+            existing_keys = set(
+                zip(existing["run_id"], existing["report_id"], existing["target_date"])
+            )
+            merged["key"] = list(
+                zip(merged["run_id"], merged["report_id"], merged["target_date"])
+            )
+            merged = merged[~merged["key"].isin(existing_keys)].copy()
+            merged = merged.drop(columns=["key"])
+
+    if merged.empty:
+        return pd.DataFrame()
+
+    merged["error"] = merged["actual_views"] - merged["forecast_views"]
+    merged["abs_error"] = merged["error"].abs()
+    merged["pct_error"] = (
+        merged["abs_error"] / merged["actual_views"].replace(0, np.nan)
+    ) * 100
+    merged["realized_at"] = pd.Timestamp.now()
+
+    df_out = merged[
+        [
+            "run_id",
+            "report_id",
+            "report_name",
+            "target_date",
+            "horizon_days",
+            "forecast_views",
+            "actual_views",
+            "error",
+            "abs_error",
+            "pct_error",
+            "run_timestamp",
+            "realized_at",
+            "model_name",
+        ]
+    ]
+
+    write_header = not realized_errors_file.exists()
+    df_out.to_csv(realized_errors_file, mode="a", index=False, header=write_header)
+    return df_out
+
+
+def run_pipeline(horizon: int = FORECAST_HORIZON_DAYS) -> dict[str, object]:
+    """Run the full forecasting baseline and save outputs."""
+    project_root = get_project_root()
+    run_timestamp = pd.Timestamp.now()
+    run_id = run_timestamp.strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+
+    _, model_input, input_path = load_forecast_feature_input(project_root)
+    dq_table = run_data_quality_checks(model_input)
+    forecast_table, metrics_table, data_diag, model_comparison_table = run_forecasts_for_reports(
+        model_input,
+        run_id=run_id,
+        run_timestamp=run_timestamp,
+        horizon_days=horizon,
+    )
+
+    latest_paths = save_latest_outputs(
+        forecast_table,
+        metrics_table,
+        model_comparison_table,
+        project_root,
+        run_id,
+        run_timestamp,
+    )
+    forecast_history_path = append_forecasts_history(forecast_table, project_root)
+    metrics_history_path = append_metrics_history(
+        metrics_table,
+        project_root,
+        run_id,
+        run_timestamp,
+    )
+    realized_errors = update_realized_errors(model_input, project_root)
+
+    print(f"RUN_ID: {run_id}")
+    print(f"Input CSV used: {input_path.relative_to(project_root)}")
+    print(f"Forecast rows published: {len(forecast_table)}")
+    print(f"Metrics rows: {len(metrics_table)}")
+    print(f"Data quality checks: {len(dq_table)}")
+    print(f"Model comparison rows: {len(model_comparison_table)}")
+    print(f"Reports passing data criteria: {int(data_diag['passes_data_criteria'].sum())}/{len(data_diag)}")
+    for path in latest_paths:
+        print(f"Saved: {path.relative_to(project_root)}")
+    if forecast_history_path:
+        print(f"Appended: {forecast_history_path.relative_to(project_root)}")
+    if metrics_history_path:
+        print(f"Appended: {metrics_history_path.relative_to(project_root)}")
+    if not realized_errors.empty:
+        print(f"Realized error rows added: {len(realized_errors)}")
+
+    return {
+        "run_id": run_id,
+        "input_path": input_path,
+        "forecast_table": forecast_table,
+        "metrics_table": metrics_table,
+        "data_diagnostics": data_diag,
+        "model_comparison_table": model_comparison_table,
+        "latest_paths": latest_paths,
+    }
 
 
 if __name__ == "__main__":
