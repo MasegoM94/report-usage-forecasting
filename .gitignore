@@ -36,6 +36,9 @@ outputs/segments/*
 !outputs/diagnostics/
 outputs/diagnostics/*
 !outputs/diagnostics/.gitkeep
+!outputs/insights/
+outputs/insights/*
+!outputs/insights/.gitkeep
 
 # Local environment files
 .env

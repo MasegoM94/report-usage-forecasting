@@ -29,7 +29,7 @@ Analytics teams often know which Power BI reports exist, but not which ones are 
 - Which reports should be monitored because their usage is volatile, declining, or difficult to predict?
 - How could future GenAI summaries help stakeholders understand changes in report behaviour?
 
-The current project now includes the forecasting feature layer. Behavioural analytics and performance telemetry are available as feature marts, while model training beyond the baseline and GenAI-generated insights remain planned extensions.
+The current project now includes the forecasting feature layer, behavioural analytics outputs, performance telemetry features, and a lightweight batch GenAI insight layer. Richer modelling beyond the baseline remains a planned extension.
 
 ## Simple Architecture
 
@@ -41,7 +41,8 @@ The current workflow is intentionally lightweight:
 4. **Feature engineering** in `notebooks/04_feature_engineering.ipynb` builds reusable Week 3 marts under `data/processed/`.
 5. **Forecasting baseline** in `notebooks/05_forecasting_baseline.ipynb` consumes `data/processed/mart_forecast_features.csv`, trains Auto-ARIMA models, and compares them with simple baselines.
 6. **Output tables** are written to `outputs/` for forecasts, metrics, history, and realised-error tracking.
-7. **Future layers** may add richer modelling, GenAI narrative summaries, and production orchestration.
+7. **GenAI insights** read the output CSVs and publish structured report summaries under `outputs/insights/`.
+8. **Future layers** may add richer modelling, more narrative review workflows, and production orchestration.
 
 See [docs/architecture.md](docs/architecture.md) for a small architecture note and future direction.
 
@@ -52,10 +53,10 @@ This is not just a time-series notebook. The aim is to show how forecasting can 
 - **Forecasting:** predict future report usage and compare against defensible baselines.
 - **Behavioural analytics:** implemented feature marts for repeat use, concentration, inactivity gaps, and page-depth proxies.
 - **Performance telemetry:** implemented feature marts for load-time levels, tails, and rolling performance signals.
-- **GenAI direction:** planned narrative summaries that explain forecast changes, risks, and stakeholder actions in plain language.
+- **GenAI insight layer:** lightweight batch-generated report summaries that explain forecast changes, risks, and stakeholder actions in plain language.
 - **Operational thinking:** current outputs already consider schema-safe tables, forecast history, and realised-error backfill concepts.
 
-The GenAI layer is deliberately not implemented yet. It is included as a roadmap direction so the project can grow from a modelling exercise into a more complete analytics product.
+The GenAI layer is intentionally lightweight in Version 0.1. It reads existing CSV outputs and writes structured report-level insights without adding a chatbot, vector database, or app layer.
 
 ## Repository Structure
 
@@ -76,6 +77,7 @@ report-usage-forecasting/
 │   ├── forecasts/                # Latest forecasts and forecast history
 │   ├── metrics/                  # Latest metrics, model comparisons, and error history
 │   ├── diagnostics/              # Reserved for forecast diagnostics
+│   ├── insights/                 # Batch-generated GenAI insight outputs
 │   ├── anomalies/                # Reserved for anomaly outputs
 │   └── segments/                 # Reserved for usage segmentation outputs
 ├── src/
@@ -91,6 +93,9 @@ report-usage-forecasting/
 │   ├── models/
 │   │   ├── baselines.py
 │   │   └── evaluate.py
+│   ├── genai/
+│   │   ├── prompts.py
+│   │   └── insight_generator.py
 │   └── pipelines/
 │       └── run_forecasting_pipeline.py
 ├── .gitignore
@@ -152,6 +157,11 @@ Run the notebooks in this order:
    - Reads `data/processed/mart_forecast_features.csv`.
    - Trains the forecasting baseline and writes model outputs to `outputs/`.
 
+6. `notebooks/06_genai_insights_demo.ipynb`
+   - Reads forecast, model performance, segment, and diagnostic CSV outputs.
+   - Creates tiny demo-only fallback data if those files do not exist yet.
+   - Writes AI insight outputs to `outputs/insights/`.
+
 ### Option 2 — Run via Python Scripts (Reproducible pipeline)
 
 Use this path when you want to regenerate the pipeline outputs consistently from the command line.
@@ -163,6 +173,8 @@ python src/data/generate_synthetic_data.py
 python src/data/build_semantic_model.py
 python src/data/validate_model.py
 python -m src.pipelines.run_forecasting_pipeline
+python -m src.pipelines.run_report_analytics_pipeline
+python -m src.genai.insight_generator
 ```
 
 The scripts perform the same core workflow as the notebooks:
@@ -171,6 +183,34 @@ The scripts perform the same core workflow as the notebooks:
 - `build_semantic_model.py` builds cleaned dimensions and fact tables in `data/processed/`.
 - `validate_model.py` runs validation checks and writes results to `outputs/validation/`.
 - `run_forecasting_pipeline.py` consumes `data/processed/mart_forecast_features.csv` when available, falls back to compatible processed report-level tables, and writes forecast outputs to `outputs/forecasts/` plus metrics outputs to `outputs/metrics/`.
+- `run_report_analytics_pipeline.py` writes report segments and diagnostics to `outputs/segments/` and `outputs/diagnostics/`.
+- `insight_generator.py` reads the latest report forecast, metric, segment, and diagnostic CSVs and writes structured insights to `outputs/insights/`.
+
+## GenAI Insight Layer
+
+Version 0.1 adds a batch-generated report insight layer under `src/genai/`.
+
+Expected inputs:
+
+- `outputs/forecasts/report_forecasts.csv`
+- `outputs/metrics/model_performance.csv`
+- `outputs/segments/report_segments.csv`
+- `outputs/diagnostics/report_diagnostics.csv`
+
+For compatibility with the current forecasting pipeline, the generator also recognizes `report_view_forecasts_latest.csv`, `report_view_metrics_latest.csv`, and `report_model_comparison_latest.csv`.
+
+Run from the project root:
+
+```bash
+python -m src.genai.insight_generator
+```
+
+Outputs:
+
+- `outputs/insights/report_ai_insights.json`
+- `outputs/insights/report_ai_insights.md`
+
+To use an OpenAI model, set `OPENAI_API_KEY` in your environment before running the script. Do not store API keys in the repository. If `OPENAI_API_KEY` is missing, the script generates deterministic rule-based placeholder insights so the notebook and command-line workflow still run.
 
 ### Why This Structure?
 
