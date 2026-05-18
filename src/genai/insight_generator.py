@@ -7,7 +7,7 @@ deterministic rule-based fallback so demos and portfolio reviews still run.
 """
 
 from __future__ import annotations
-
+from dotenv import load_dotenv
 import json
 import os
 from pathlib import Path
@@ -16,7 +16,7 @@ from typing import Any
 import pandas as pd
 import requests
 
-from src.genai.prompts import REPORT_INSIGHT_SYSTEM_PROMPT, build_report_insight_prompt
+from prompts import REPORT_INSIGHT_SYSTEM_PROMPT, build_report_insight_prompt
 
 
 FORECAST_INPUT_CANDIDATES = [
@@ -284,7 +284,11 @@ def generate_ai_insight(
     api_key: str | None = None,
 ) -> dict[str, Any]:
     """Generate one report insight using OpenAI when configured, else fallback."""
+    project_root = get_project_root()
+    load_dotenv(project_root / ".env")
+
     resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
+
     if not resolved_api_key:
         return generate_rule_based_insight(report_context)
 
