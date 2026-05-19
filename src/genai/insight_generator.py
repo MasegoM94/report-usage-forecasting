@@ -10,13 +10,15 @@ from __future__ import annotations
 from dotenv import load_dotenv
 import json
 import os
+import re
+import time
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
 
-from prompts import REPORT_INSIGHT_SYSTEM_PROMPT, build_report_insight_prompt
+from src.genai.prompts import REPORT_INSIGHT_SYSTEM_PROMPT, build_report_insight_prompt
 
 
 FORECAST_INPUT_CANDIDATES = [
@@ -35,6 +37,9 @@ DIAGNOSTICS_INPUT = "report_diagnostics.csv"
 DEFAULT_MODEL = "gpt-4.1-mini"
 OUTPUT_JSON = "report_ai_insights.json"
 OUTPUT_MARKDOWN = "report_ai_insights.md"
+MAX_API_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 3
+REQUEST_DELAY_SECONDS = 3
 
 
 def get_project_root() -> Path:
@@ -236,6 +241,41 @@ def generate_rule_based_insight(report_context: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _parse_json_response(text: str) -> dict[str, Any]:
+    """Parse JSON from raw, fenced, or prose-wrapped model responses."""
+    candidates = [text.strip()]
+
+    fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+    candidates.extend(block.strip() for block in fenced_blocks)
+
+    errors = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            errors.append(str(exc))
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        errors.append(f"Parsed JSON was {type(parsed).__name__}, not object")
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            parsed, _ = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError as exc:
+            errors.append(str(exc))
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        errors.append(f"Parsed JSON was {type(parsed).__name__}, not object")
+
+    detail = f" Last parse error: {errors[-1]}" if errors else ""
+    raise ValueError(f"No valid JSON object could be parsed from OpenAI response.{detail}")
+
+
 def _call_openai_responses_api(
     report_context: dict[str, Any],
     model: str,
@@ -271,7 +311,7 @@ def _call_openai_responses_api(
                     text_parts.append(content.get("text", ""))
         text = "\n".join(text_parts).strip()
 
-    insight = json.loads(text)
+    insight = _parse_json_response(text)
     insight["report_id"] = report_context.get("report_id")
     insight["report_name"] = report_context.get("report_name") or report_context.get("report_id")
     insight["generation_mode"] = "openai"
@@ -285,20 +325,31 @@ def generate_ai_insight(
 ) -> dict[str, Any]:
     """Generate one report insight using OpenAI when configured, else fallback."""
     project_root = get_project_root()
-    load_dotenv(project_root / ".env")
+    load_dotenv(project_root / ".env", override=True)
 
     resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
 
     if not resolved_api_key:
-        return generate_rule_based_insight(report_context)
-
-    try:
-        return _call_openai_responses_api(report_context, model, resolved_api_key)
-    except Exception as exc:
         insight = generate_rule_based_insight(report_context)
-        insight["generation_mode"] = "rule_based_fallback_after_api_error"
-        insight["api_error"] = str(exc)
+        insight["api_attempts"] = 0
         return insight
+
+    last_error = None
+    for attempt in range(1, MAX_API_RETRIES + 1):
+        try:
+            insight = _call_openai_responses_api(report_context, model, resolved_api_key)
+            insight["api_attempts"] = attempt
+            return insight
+        except Exception as exc:
+            last_error = exc
+            if attempt < MAX_API_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+    insight = generate_rule_based_insight(report_context)
+    insight["generation_mode"] = "rule_based_fallback_after_api_error"
+    insight["api_error"] = str(last_error)
+    insight["api_attempts"] = MAX_API_RETRIES
+    return insight
 
 
 def generate_report_insights(
@@ -311,7 +362,16 @@ def generate_report_insights(
     contexts = build_report_contexts(tables)
     if limit is not None:
         contexts = contexts[:limit]
-    return [generate_ai_insight(context, model=model) for context in contexts]
+
+    insights = []
+    total_reports = len(contexts)
+    for index, context in enumerate(contexts, start=1):
+        report_label = context.get("report_name") or context.get("report_id")
+        print(f"Generating insight {index}/{total_reports}: {report_label}")
+        insights.append(generate_ai_insight(context, model=model))
+        if index < total_reports:
+            time.sleep(REQUEST_DELAY_SECONDS)
+    return insights
 
 
 def save_insights(
