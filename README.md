@@ -1,12 +1,12 @@
 # Power BI Usage Intelligence: Forecasting, Behavioural Analytics, and GenAI Insights
 
-This project explores how Power BI usage data can be turned into practical intelligence for analytics teams. The current version includes a notebook-first forecasting baseline plus a Week 3 feature-engineering layer that produces modeling-ready report usage, behavioural, performance, and joined forecast feature marts from synthetic, shareable data. The longer-term direction is to combine forecasting, behavioural analytics, and GenAI-assisted explanations into a lightweight decision-support workflow.
+This project explores how synthetic Power BI-style usage data can be turned into practical intelligence for analytics teams. The current version includes a notebook-first forecasting baseline, behavioural analytics, report and user segmentation, diagnostics, and a lightweight batch GenAI insight layer built from shareable synthetic data.
 
-The repository is intentionally small at this stage. It is structured so the current notebook can be reviewed easily, while leaving a clean foundation for future modelling, evaluation, and documentation work.
+The repository is structured so the workflow can be reviewed through notebooks or regenerated through Python scripts, while leaving a clean foundation for future modelling, evaluation, and demo work.
 
 ## Project Overview
 
-The current notebooks demonstrate an end-to-end workflow for report usage forecasting and feature engineering:
+The notebooks demonstrate an end-to-end workflow for report usage forecasting, behavioural analytics, and GenAI-assisted insight generation:
 
 - Generates synthetic report usage data with weekly patterns, trend, noise, and zero-activity days.
 - Builds a clean semantic model from raw telemetry-style tables.
@@ -16,7 +16,8 @@ The current notebooks demonstrate an end-to-end workflow for report usage foreca
 - Applies data sufficiency checks before modelling.
 - Trains per-report Auto-ARIMA models.
 - Compares model performance against naive and seasonal-naive baselines.
-- Publishes forecast, metrics, history, and realised-error style outputs for downstream review.
+- Builds report and user analytics outputs, including segmentation and diagnostics.
+- Publishes forecast, metrics, segment, diagnostic, validation, and insight outputs for downstream review.
 
 The project is designed as a portfolio-friendly version of a realistic analytics problem, without exposing private Power BI or organisational usage data.
 
@@ -27,7 +28,7 @@ Analytics teams often know which Power BI reports exist, but not which ones are 
 - Which reports are likely to see higher demand over the next month?
 - Which reports have stable enough usage patterns to forecast responsibly?
 - Which reports should be monitored because their usage is volatile, declining, or difficult to predict?
-- How could future GenAI summaries help stakeholders understand changes in report behaviour?
+- How can GenAI summaries help stakeholders understand changes in report behaviour?
 
 The current project now includes the forecasting feature layer, behavioural analytics outputs, performance telemetry features, and a lightweight batch GenAI insight layer. Richer modelling beyond the baseline remains a planned extension.
 
@@ -40,9 +41,10 @@ The current workflow is intentionally lightweight:
 3. **Validation** checks the semantic model before downstream use.
 4. **Feature engineering** in `notebooks/04_feature_engineering.ipynb` builds reusable Week 3 marts under `data/processed/`.
 5. **Forecasting baseline** in `notebooks/05_forecasting_baseline.ipynb` consumes `data/processed/mart_forecast_features.csv`, trains Auto-ARIMA models, and compares them with simple baselines.
-6. **Output tables** are written to `outputs/` for forecasts, metrics, history, and realised-error tracking.
-7. **GenAI insights** read the output CSVs and publish structured report summaries under `outputs/insights/`.
-8. **Future layers** may add richer modelling, more narrative review workflows, and production orchestration.
+6. **Report and user analytics** create segmentation, diagnostics, and engagement outputs.
+7. **Output tables** are written to `outputs/` for forecasts, metrics, segments, diagnostics, validation, and insights.
+8. **GenAI insights** read the output CSVs and publish structured report summaries under `outputs/insights/`.
+9. **Future layers** may add richer modelling, reviewer-friendly demo views, and stronger evaluation checks.
 
 See [docs/architecture.md](docs/architecture.md) for a small architecture note and future direction.
 
@@ -71,15 +73,18 @@ report-usage-forecasting/
 │   ├── 02_build_semantic_model_csv.ipynb
 │   ├── 03_validate_semantic_model_hybrid_gx_csv.ipynb
 │   ├── 04_feature_engineering.ipynb
-│   └── 05_forecasting_baseline.ipynb
+│   ├── 05_forecasting_baseline.ipynb
+│   ├── 06_report_analytics.ipynb
+│   ├── 07_user_analytics.ipynb
+│   └── 08_genai_insights.ipynb
 ├── outputs/
 │   ├── validation/               # Validation results and reconciliation outputs
 │   ├── forecasts/                # Latest forecasts and forecast history
 │   ├── metrics/                  # Latest metrics, model comparisons, and error history
-│   ├── diagnostics/              # Reserved for forecast diagnostics
+│   ├── segments/                 # Report and user segmentation outputs
+│   ├── diagnostics/              # Diagnostic rule outputs
 │   ├── insights/                 # Batch-generated GenAI insight outputs
-│   ├── anomalies/                # Reserved for anomaly outputs
-│   └── segments/                 # Reserved for usage segmentation outputs
+│   └── anomalies/                # Optional anomaly outputs placeholder
 ├── src/
 │   ├── data/
 │   │   ├── generate_synthetic_data.py
@@ -93,11 +98,19 @@ report-usage-forecasting/
 │   ├── models/
 │   │   ├── baselines.py
 │   │   └── evaluate.py
+│   ├── analytics/
+│   │   ├── report_features.py
+│   │   ├── report_segmentation.py
+│   │   ├── report_diagnostics.py
+│   │   ├── user_features.py
+│   │   └── user_segmentation.py
 │   ├── genai/
 │   │   ├── prompts.py
 │   │   └── insight_generator.py
 │   └── pipelines/
-│       └── run_forecasting_pipeline.py
+│       ├── run_forecasting_pipeline.py
+│       ├── run_report_analytics_pipeline.py
+│       └── run_user_analytics_pipeline.py
 ├── .gitignore
 ├── LICENSE
 ├── README.md
@@ -157,9 +170,16 @@ Run the notebooks in this order:
    - Reads `data/processed/mart_forecast_features.csv`.
    - Trains the forecasting baseline and writes model outputs to `outputs/`.
 
-6. `notebooks/06_genai_insights_demo.ipynb`
+6. `notebooks/06_report_analytics.ipynb`
+   - Builds report-level analytics, segmentation, and diagnostics.
+   - Writes outputs to `outputs/segments/`, `outputs/diagnostics/`, and `outputs/metrics/`.
+
+7. `notebooks/07_user_analytics.ipynb`
+   - Builds user-level engagement features and segmentation outputs.
+   - Writes outputs to `outputs/segments/` and `outputs/metrics/`.
+
+8. `notebooks/08_genai_insights.ipynb`
    - Reads forecast, model performance, segment, and diagnostic CSV outputs.
-   - Creates tiny demo-only fallback data if those files do not exist yet.
    - Writes AI insight outputs to `outputs/insights/`.
 
 ### Option 2 — Run via Python Scripts (Reproducible pipeline)
@@ -174,6 +194,7 @@ python src/data/build_semantic_model.py
 python src/data/validate_model.py
 python -m src.pipelines.run_forecasting_pipeline
 python -m src.pipelines.run_report_analytics_pipeline
+python -m src.pipelines.run_user_analytics_pipeline
 python -m src.genai.insight_generator
 ```
 
@@ -184,7 +205,17 @@ The scripts perform the same core workflow as the notebooks:
 - `validate_model.py` runs validation checks and writes results to `outputs/validation/`.
 - `run_forecasting_pipeline.py` consumes `data/processed/mart_forecast_features.csv` when available, falls back to compatible processed report-level tables, and writes forecast outputs to `outputs/forecasts/` plus metrics outputs to `outputs/metrics/`.
 - `run_report_analytics_pipeline.py` writes report segments and diagnostics to `outputs/segments/` and `outputs/diagnostics/`.
+- `run_user_analytics_pipeline.py` writes user engagement features and user segments to `outputs/metrics/` and `outputs/segments/`.
 - `insight_generator.py` reads the latest report forecast, metric, segment, and diagnostic CSVs and writes structured insights to `outputs/insights/`.
+
+## Current Outputs
+
+- `outputs/forecasts/` stores forecast outputs.
+- `outputs/metrics/` stores model performance and comparison outputs.
+- `outputs/segments/` stores report and user segmentation outputs.
+- `outputs/diagnostics/` stores diagnostic rule outputs.
+- `outputs/insights/` stores GenAI-generated insight outputs.
+- `outputs/validation/` stores validation and reconciliation outputs.
 
 ## GenAI Insight Layer
 
@@ -217,32 +248,37 @@ To use an OpenAI model, set `OPENAI_API_KEY` in your environment before running 
 - Separates raw telemetry-style data from cleaned semantic model outputs.
 - Mirrors a real-world analytics engineering workflow.
 - Supports both experimentation and reproducibility.
-- Makes the project easier to extend with forecasting features, behavioural analytics, and future GenAI insight layers.
+- Makes the project easier to extend with forecasting features, behavioural analytics, and GenAI insight evaluation.
 
 ## Current Status
 
 Implemented now:
 
 - Synthetic Power BI-style usage dataset.
-- Baseline report-level forecasting notebook that consumes `mart_forecast_features`.
-- Week 3 feature engineering notebook with reusable `src/features/` modules.
-- Processed marts for `mart_report_daily_adoption`, `mart_user_engagement`, `mart_report_performance`, and `mart_forecast_features`.
-- Auto-ARIMA modelling with naive and seasonal-naive comparisons.
-- Basic model acceptance criteria.
-- Forecast, metrics, history, and realised-error output patterns.
-- Lightweight project structure for continued development.
+- Semantic model build.
+- Hybrid validation using Great Expectations and pandas checks.
+- Feature marts for report usage, engagement, performance, and forecasting.
+- Forecasting baseline with naive and seasonal-naive comparisons.
+- Report analytics.
+- User analytics.
+- Diagnostics.
+- Segmentation.
+- Batch GenAI insight layer.
 
 Planned next:
 
-- Stronger evaluation using rolling-origin backtesting.
-- More visual diagnostics for forecast quality and residual behaviour.
-- A small GenAI insight layer that summarises forecast changes and potential actions.
-- Forecast model refinements on top of the joined `mart_forecast_features` table.
+- Add a Streamlit app for a reviewer-friendly demo.
+- Add screenshots or sample output images to the README.
+- Improve forecast evaluation with rolling-origin backtesting.
+- Add a stronger model governance table.
+- Add optional open-source forecasting model comparison.
+- Add GenAI output evaluation or prompt quality checks.
 
 ## Roadmap
 
-1. Add rolling-origin evaluation and per-horizon metrics.
-2. Add a concise diagnostics section with forecast-vs-actual and error-by-horizon visuals.
-3. Create a small behavioural analytics notebook or module for report usage segmentation.
-4. Draft GenAI prompt templates for future usage summaries, without connecting to an API yet.
-5. Move stable notebook functions into `src/` only when the workflow is mature enough to reuse.
+1. Add a Streamlit app for reviewer-friendly walkthroughs.
+2. Add README screenshots or sample output images.
+3. Improve forecast evaluation with rolling-origin backtesting.
+4. Add a stronger model governance table.
+5. Add optional open-source forecasting model comparison.
+6. Add GenAI output evaluation or prompt quality checks.
