@@ -1,41 +1,54 @@
 # Architecture Note
 
-This document is lightweight scaffolding for the project architecture. It captures the current shape of the work and the intended direction without claiming that future modules are already implemented.
+This document is a lightweight architecture note for **Power BI Usage Intelligence: Forecasting, Behavioural Analytics, and GenAI Insights**.
+
+The project uses synthetic, shareable Power BI-style telemetry data. It does not connect to, extract from, or deploy against the real Power BI service.
 
 ## Current Flow
 
 ```text
-Synthetic usage data
+Synthetic telemetry tables
         |
         v
-Semantic model CSV tables
+Raw CSV tables
         |
         v
-Validation checks
+Semantic model build
         |
         v
-Feature engineering marts
+Processed dimensions and facts
         |
         v
-Report-level forecasting baseline
+Feature marts
         |
         v
-Forecast, metrics, history, and realised-error outputs
+Analytics outputs
+        |
+        v
+Forecasting outputs
+        |
+        v
+GenAI insight outputs
+        |
+        v
+Future Streamlit app
 ```
 
 ## Current Structure
 
 ```text
 data/raw/
-        Raw synthetic telemetry-style CSV tables.
+        Synthetic raw telemetry-style CSV tables.
 
 data/processed/
-        Clean dimensions, facts, and feature marts, including
-        mart_forecast_features.csv.
+        Clean dimensions, facts, and reusable feature marts.
+
+docs/data_model.md
+        Detailed table notes for the semantic model and output tables.
 
 notebooks/
-        Ordered notebook workflow from raw data generation through the
-        forecasting baseline.
+        Ordered workflow from synthetic data generation through validation,
+        feature engineering, forecasting, analytics, and GenAI insights.
 
 src/data/
         Script versions of data generation, semantic model build, and
@@ -46,40 +59,48 @@ src/features/
         performance, and joined forecast features.
 
 src/models/
-        Lightweight baseline and metric helpers.
+        Forecasting baselines and metric helpers.
+
+src/analytics/
+        Report analytics, user analytics, diagnostics, and segmentation.
+
+src/genai/
+        Lightweight batch insight generation from forecast, segment, metric,
+        and diagnostic outputs.
 
 src/pipelines/
-        Command-line forecasting baseline runner that mirrors the current
-        notebook output contract.
+        Command-line runners for forecasting, report analytics, and user
+        analytics.
 
 outputs/validation/
         Data quality and reconciliation results.
 
 outputs/forecasts/
-        Latest forecast table and appended forecast history.
+        Forecast tables and forecast history.
 
 outputs/metrics/
-        Latest forecast metrics, model comparison, metrics history, and
-        realised-error history.
+        Forecast metrics, model comparison, analytics metrics, and history.
 
-outputs/diagnostics/, outputs/anomalies/, outputs/segments/
-        Reserved extension folders for forecast diagnostics, anomaly flags,
-        and behavioural segmentation outputs.
+outputs/segments/
+        Report and user segmentation outputs.
+
+outputs/diagnostics/
+        Report diagnostic rule outputs.
+
+outputs/insights/
+        Batch-generated GenAI report insight outputs.
+
+outputs/anomalies/
+        Optional anomaly output placeholder.
 ```
 
-## Future Direction
+## Future Improvements
 
 ```text
-Power BI usage data
-        |
-        v
-Forecasting + behavioural analytics
-        |
-        v
-Forecast diagnostics and usage segments
-        |
-        v
-GenAI-assisted summaries for stakeholders
+Streamlit app for reviewer-friendly exploration
+Rolling-origin backtesting for stronger forecast validation
+Optional open-source forecasting model comparison
+GenAI evaluation for insight quality and consistency
 ```
 
-The immediate goal is to keep the notebook and script output contract aligned while strengthening backtesting, diagnostics, and future GenAI components.
+The immediate goal is to keep the notebook and script output contracts aligned while preserving a simple, portfolio-friendly workflow.
