@@ -12,7 +12,7 @@ The notebooks demonstrate an end-to-end workflow for report usage forecasting, b
 - Builds a clean semantic model from raw telemetry-style tables.
 - Validates the semantic model before feature engineering.
 - Builds daily report-level time series from user-level usage records.
-- Builds Week 3 feature marts for adoption, engagement, performance, and final forecast features.
+- Builds feature marts for adoption, engagement, performance, and final forecast features.
 - Applies data sufficiency checks before modelling.
 - Trains per-report Auto-ARIMA models.
 - Compares model performance against naive and seasonal-naive baselines.
@@ -39,7 +39,7 @@ The current workflow is intentionally lightweight:
 1. **Synthetic usage data** is generated into raw CSV tables.
 2. **Semantic model build** creates cleaned dimensions and facts under `data/processed/`.
 3. **Validation** checks the semantic model before downstream use.
-4. **Feature engineering** in `notebooks/04_feature_engineering.ipynb` builds reusable Week 3 marts under `data/processed/`.
+4. **Feature engineering** in `notebooks/04_feature_engineering.ipynb` builds reusable marts under `data/processed/`.
 5. **Forecasting baseline** in `notebooks/05_forecasting_baseline.ipynb` consumes `data/processed/mart_forecast_features.csv`, trains Auto-ARIMA models, and compares them with simple baselines.
 6. **Report and user analytics** create segmentation, diagnostics, and engagement outputs.
 7. **Output tables** are written to `outputs/` for forecasts, metrics, segments, diagnostics, validation, and insights.
