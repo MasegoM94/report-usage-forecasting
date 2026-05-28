@@ -130,6 +130,12 @@ jupyter notebook notebooks/01_generate_raw_tables.ipynb
 
 Then run the notebooks in order. Generated CSV outputs are written to `data/raw/`, `data/processed/`, and the project-level `outputs/` folder.
 
+To open the lightweight reviewer app after outputs have been generated:
+
+```bash
+streamlit run src/app/streamlit_app.py
+```
+
 ## Running the Data Pipeline
 
 The data pipeline can be run in two ways:
@@ -228,6 +234,16 @@ Expected inputs:
 - `outputs/segments/report_segments.csv`
 - `outputs/diagnostics/report_diagnostics.csv`
 
+## Streamlit Reviewer App
+
+The demo app reads the generated CSV and JSON outputs directly. It includes an overview page for user adoption, report adoption, at-risk reports, and forecast reliability, plus tabs for forecast exploration, behavioural diagnostics, and AI-generated report insights.
+
+Run from the project root:
+
+```bash
+streamlit run src/app/streamlit_app.py
+```
+
 For compatibility with the current forecasting pipeline, the generator also recognizes `report_view_forecasts_latest.csv`, `report_view_metrics_latest.csv`, and `report_model_comparison_latest.csv`.
 
 Run from the project root:
@@ -264,10 +280,10 @@ Implemented now:
 - Diagnostics.
 - Segmentation.
 - Batch GenAI insight layer.
+- Lightweight Streamlit reviewer app.
 
 Planned next:
 
-- Add a Streamlit app for a reviewer-friendly demo.
 - Add screenshots or sample output images to the README.
 - Improve forecast evaluation with rolling-origin backtesting.
 - Add a stronger model governance table.
@@ -276,9 +292,8 @@ Planned next:
 
 ## Roadmap
 
-1. Add a Streamlit app for reviewer-friendly walkthroughs.
-2. Add README screenshots or sample output images.
-3. Improve forecast evaluation with rolling-origin backtesting.
-4. Add a stronger model governance table.
-5. Add optional open-source forecasting model comparison.
-6. Add GenAI output evaluation or prompt quality checks.
+1. Add README screenshots or sample output images.
+2. Improve forecast evaluation with rolling-origin backtesting.
+3. Add a stronger model governance table.
+4. Add optional open-source forecasting model comparison.
+5. Add GenAI output evaluation or prompt quality checks.
