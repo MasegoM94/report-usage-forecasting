@@ -14,6 +14,7 @@ import pandas as pd
 
 
 OUTPUT_PATHS = {
+    "forecast_features": Path("data/processed/mart_forecast_features.csv"),
     "forecasts": Path("outputs/forecasts/report_view_forecasts_latest.csv"),
     "metrics": Path("outputs/metrics/report_view_metrics_latest.csv"),
     "report_features": Path("outputs/metrics/report_features.csv"),
@@ -45,6 +46,7 @@ DIAGNOSTIC_COLUMNS = [
     "primary_diagnostic",
     "main_diagnostic",
 ]
+DATE_COLUMNS = ["date", "Date", "creation_time", "CreationTime", "timestamp", "Timestamp"]
 
 
 def first_existing_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -70,6 +72,18 @@ def has_positive_usage(df: pd.DataFrame) -> pd.Series:
     if view_col is None:
         return pd.Series(True, index=df.index)
     return pd.to_numeric(df[view_col], errors="coerce").fillna(0).gt(0)
+
+
+def get_analysis_date_range(df: pd.DataFrame) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    """Return the observed start and end dates from the first available date column."""
+    date_col = first_existing_column(df, DATE_COLUMNS)
+    if df.empty or date_col is None:
+        return None, None
+
+    dates = pd.to_datetime(df[date_col], errors="coerce").dropna()
+    if dates.empty:
+        return None, None
+    return dates.min().normalize(), dates.max().normalize()
 
 
 def project_root() -> Path:
@@ -124,8 +138,9 @@ def normalize_report_columns(df: pd.DataFrame) -> pd.DataFrame:
     if user_id_col and "user_id" not in renamed.columns:
         renamed["user_id"] = renamed[user_id_col]
 
-    if "Date" in renamed.columns:
-        renamed["Date"] = pd.to_datetime(renamed["Date"], errors="coerce")
+    for date_col in DATE_COLUMNS:
+        if date_col in renamed.columns:
+            renamed[date_col] = pd.to_datetime(renamed[date_col], errors="coerce")
     if "target_date" in renamed.columns:
         renamed["target_date"] = pd.to_datetime(renamed["target_date"], errors="coerce")
     return renamed
@@ -176,6 +191,50 @@ def row_for_report(df: pd.DataFrame, report_id: str) -> pd.Series:
     return match.iloc[0]
 
 
+def _historical_forecast_rows(forecasts: pd.DataFrame) -> pd.DataFrame:
+    """Limit forecast output rows to dates with observed activity."""
+    if forecasts.empty:
+        return forecasts
+    if "IsForecast" in forecasts.columns:
+        forecast_mask = forecasts["IsForecast"].astype(str).str.strip().str.lower().isin(
+            {"true", "1", "yes", "y"}
+        )
+        return forecasts.loc[~forecast_mask]
+    if "actual" in forecasts.columns:
+        return forecasts.loc[forecasts["actual"].notna()]
+    return forecasts
+
+
+def get_dashboard_analysis_period(data: dict[str, pd.DataFrame]) -> dict[str, Any]:
+    """Choose the clearest available source for the dashboard analysis date range."""
+    sources = [
+        ("forecast input feature mart", data.get("forecast_features", pd.DataFrame())),
+        (
+            "historical forecast output rows",
+            _historical_forecast_rows(data.get("forecasts", pd.DataFrame())),
+        ),
+        ("report usage data", data.get("fact_report_views", pd.DataFrame())),
+        ("report-level feature data", data.get("report_features", pd.DataFrame())),
+    ]
+
+    for source, df in sources:
+        start_date, end_date = get_analysis_date_range(df)
+        if start_date is not None and end_date is not None:
+            return {
+                "start_date": start_date,
+                "end_date": end_date,
+                "source": source,
+                "warnings": [],
+            }
+
+    return {
+        "start_date": None,
+        "end_date": None,
+        "source": None,
+        "warnings": ["No analysis date column was found in the loaded dashboard data."],
+    }
+
+
 def _distinct_count(df: pd.DataFrame, candidates: list[str]) -> int | None:
     """Count distinct identifiers from the first available candidate column."""
     column = first_existing_column(df, candidates)
@@ -202,23 +261,25 @@ def calculate_user_adoption_metrics(data: dict[str, pd.DataFrame]) -> dict[str, 
     """Summarise total and active users using the best available app inputs."""
     warnings: list[str] = []
     frames = [
-        ("user dimension", data.get("dim_user", pd.DataFrame())),
-        ("user features", data.get("user_features", pd.DataFrame())),
-        ("user segments", data.get("user_segments", pd.DataFrame())),
-        ("report view events", data.get("fact_report_views", pd.DataFrame())),
+        ("user catalogue", data.get("dim_user", pd.DataFrame())),
+        ("user summaries", data.get("user_features", pd.DataFrame())),
+        ("user groups", data.get("user_segments", pd.DataFrame())),
+        ("view history", data.get("fact_report_views", pd.DataFrame())),
     ]
 
     total_users = _distinct_count(data.get("dim_user", pd.DataFrame()), USER_ID_COLUMNS)
-    total_source = "user dimension"
-    assumption = "Total users are counted from data/processed/dim_user.csv."
+    total_source = "user catalogue"
+    assumption = "Total users were counted from the user catalogue."
     if total_users is None:
         total_users, total_source = _largest_distinct_count(frames[1:], USER_ID_COLUMNS)
         if total_source:
-            assumption = f"Total users are inferred from {total_source}."
-            warnings.append("User dimension was unavailable, so total users were inferred.")
+            assumption = f"Total users were estimated from the broadest available {total_source}."
+            warnings.append(
+                "The user catalogue was unavailable, so total users were estimated from summary data."
+            )
         else:
             assumption = "Total users could not be calculated from the available files."
-            warnings.append("No user dimension or user-level output was available.")
+            warnings.append("No user catalogue or user summary was available.")
 
     events = data.get("fact_report_views", pd.DataFrame())
     user_features = data.get("user_features", pd.DataFrame())
@@ -226,20 +287,23 @@ def calculate_user_adoption_metrics(data: dict[str, pd.DataFrame]) -> dict[str, 
     active_source = None
     if not events.empty and first_existing_column(events, USER_ID_COLUMNS):
         active_users = _distinct_count(events.loc[has_positive_usage(events)], USER_ID_COLUMNS)
-        active_source = "report view events"
+        active_source = "view history"
     elif not user_features.empty and first_existing_column(user_features, USER_ID_COLUMNS):
         active_users = _distinct_count(
             user_features.loc[has_positive_usage(user_features)], USER_ID_COLUMNS
         )
-        active_source = "user features"
-        warnings.append("Active users were inferred from user-level feature totals.")
+        active_source = "user summaries"
+        warnings.append("Active users were estimated from user summary data.")
     elif total_users is not None:
         active_users = total_users
         active_source = total_source
-        warnings.append("Active user usage events were unavailable, so active users equal total users.")
+        warnings.append("Detailed user view history was unavailable, so active users equal total users.")
 
     active_pct = active_users / total_users if total_users and active_users is not None else None
     return {
+        "total_users": total_users,
+        "active_users": active_users,
+        "active_user_rate": active_pct,
         "total": total_users,
         "active": active_users,
         "active_pct": active_pct,
@@ -254,25 +318,27 @@ def calculate_report_adoption_metrics(data: dict[str, pd.DataFrame]) -> dict[str
     """Summarise total and used reports using dimensions, events, or outputs."""
     warnings: list[str] = []
     report_frames = [
-        ("report dimension", data.get("dim_report", pd.DataFrame())),
-        ("report features", data.get("report_features", pd.DataFrame())),
-        ("report segments", data.get("segments", pd.DataFrame())),
-        ("forecast metrics", data.get("metrics", pd.DataFrame())),
+        ("report catalogue", data.get("dim_report", pd.DataFrame())),
+        ("report summaries", data.get("report_features", pd.DataFrame())),
+        ("report groups", data.get("segments", pd.DataFrame())),
+        ("forecast summaries", data.get("metrics", pd.DataFrame())),
         ("diagnostics", data.get("diagnostics", pd.DataFrame())),
-        ("forecast outputs", data.get("forecasts", pd.DataFrame())),
+        ("forecast results", data.get("forecasts", pd.DataFrame())),
     ]
 
     total_reports = _distinct_count(data.get("dim_report", pd.DataFrame()), REPORT_ID_COLUMNS)
-    total_source = "report dimension"
-    assumption = "Total reports are counted from data/processed/dim_report.csv."
+    total_source = "report catalogue"
+    assumption = "Total reports were counted from the report catalogue."
     if total_reports is None:
         total_reports, total_source = _largest_distinct_count(report_frames[1:], REPORT_ID_COLUMNS)
         if total_source:
-            assumption = f"Total reports are inferred from {total_source}."
-            warnings.append("Report dimension was unavailable, so total reports were inferred.")
+            assumption = f"Total reports were estimated from the broadest available {total_source}."
+            warnings.append(
+                "The report catalogue was unavailable, so total reports were estimated from summary data."
+            )
         else:
             assumption = "Total reports could not be calculated from the available files."
-            warnings.append("No report dimension or report-level output was available.")
+            warnings.append("No report catalogue or report summary was available.")
 
     events = data.get("fact_report_views", pd.DataFrame())
     features = data.get("report_features", pd.DataFrame())
@@ -280,18 +346,21 @@ def calculate_report_adoption_metrics(data: dict[str, pd.DataFrame]) -> dict[str
     active_source = None
     if not events.empty and first_existing_column(events, REPORT_ID_COLUMNS):
         active_reports = _distinct_count(events.loc[has_positive_usage(events)], REPORT_ID_COLUMNS)
-        active_source = "report view events"
+        active_source = "view history"
     elif not features.empty and first_existing_column(features, REPORT_ID_COLUMNS):
         active_reports = _distinct_count(features.loc[has_positive_usage(features)], REPORT_ID_COLUMNS)
-        active_source = "report features"
-        warnings.append("Active reports were inferred from report-level feature totals.")
+        active_source = "report summaries"
+        warnings.append("Used reports were estimated from report summary data.")
     elif total_reports is not None:
         active_reports = total_reports
         active_source = total_source
-        warnings.append("Report usage events were unavailable, so active reports equal total reports.")
+        warnings.append("Detailed report view history was unavailable, so used reports equal total reports.")
 
     active_pct = active_reports / total_reports if total_reports and active_reports is not None else None
     return {
+        "total_reports": total_reports,
+        "used_reports": active_reports,
+        "report_usage_rate": active_pct,
         "total": total_reports,
         "active": active_reports,
         "active_pct": active_pct,

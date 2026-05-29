@@ -19,6 +19,7 @@ from utils.load_data import (
     calculate_forecast_reliability_summary,
     calculate_report_adoption_metrics,
     calculate_user_adoption_metrics,
+    get_dashboard_analysis_period,
     get_at_risk_reports,
     load_app_data,
     row_for_report,
@@ -52,13 +53,23 @@ def fmt_percent(value: Any, decimals: int = 1) -> str:
         return str(value)
 
 
-def adoption_value(metrics: dict[str, Any]) -> str:
-    """Format total/active adoption metrics for compact overview cards."""
-    return (
-        f"{fmt_number(metrics.get('total'))} total | "
-        f"{fmt_number(metrics.get('active'))} active | "
-        f"{fmt_percent(metrics.get('active_pct'))} active"
-    )
+def fmt_date(value: Any) -> str:
+    """Format a date for the Overview analysis period."""
+    if pd.isna(value):
+        return "Not Available"
+    try:
+        return pd.to_datetime(value).strftime("%d %b %Y")
+    except (TypeError, ValueError):
+        return "Not Available"
+
+
+def fmt_analysis_period(period: dict[str, Any]) -> str:
+    """Format the selected analysis period for display."""
+    start_date = period.get("start_date")
+    end_date = period.get("end_date")
+    if start_date is None or end_date is None:
+        return "Not Available"
+    return f"{fmt_date(start_date)} - {fmt_date(end_date)}"
 
 
 def metric_with_help(container: Any, label: str, value: Any, help_text: str) -> None:
@@ -68,14 +79,6 @@ def metric_with_help(container: Any, label: str, value: Any, help_text: str) -> 
     except TypeError:
         container.metric(label, value)
         container.caption(help_text)
-
-
-def rerun_app() -> None:
-    """Rerun the app after a session-state selector change."""
-    if hasattr(st, "rerun"):
-        st.rerun()
-    elif hasattr(st, "experimental_rerun"):
-        st.experimental_rerun()
 
 
 def truthy(value: Any) -> bool:
@@ -135,55 +138,82 @@ def diagnostics_flags(row: pd.Series) -> pd.DataFrame:
 
 def render_overview(data: dict[str, pd.DataFrame]) -> None:
     st.header("Overview")
+    analysis_period = get_dashboard_analysis_period(data)
     user_adoption = calculate_user_adoption_metrics(data)
     report_adoption = calculate_report_adoption_metrics(data)
     reliability = calculate_forecast_reliability_summary(data)
     at_risk_reports = get_at_risk_reports(data)
 
     at_risk_help = (
-        "At risk reports are reports flagged by the analytics layer as showing declining usage, "
-        "low adoption, weak repeat engagement, high dependence on a small number of users, "
-        "performance issues, or unreliable forecast behaviour."
+        "Reports at risk are reports showing signs of declining usage, weak repeat engagement, "
+        "high reliance on a small group of users, performance issues, or unreliable forecasting "
+        "patterns."
     )
     reliability_help = (
-        "Forecast reliability represents the share or percentage of report forecasts that passed "
-        "the project's reliability rules. A reliable forecast is one where the selected model has "
-        "acceptable error, enough historical data, and stable enough usage patterns to support "
-        "short-term forecasting. This percentage is the proportion of reports classified as "
-        "forecast reliable; it does not mean the model is that percent accurate."
+        "Forecast reliability shows the share of report forecasts that passed the project's "
+        "quality checks. It does not mean the model is that percentage accurate."
     )
 
-    col1, col2, col3, col4 = st.columns(4)
+    st.subheader("User Adoption")
+    user_cols = st.columns(3)
     metric_with_help(
-        col1,
+        user_cols[0],
         "Total Users",
-        adoption_value(user_adoption),
-        (
-            "Total users are all users available in the user dimension or the most complete "
-            "user-level output. Active users have at least one view or usage event. "
-            f"{user_adoption.get('assumption', '')}"
-        ),
+        fmt_number(user_adoption.get("total_users")),
+        "The number of users available in the usage dataset.",
     )
     metric_with_help(
-        col2,
+        user_cols[1],
+        "Active Users",
+        fmt_number(user_adoption.get("active_users")),
+        "The number of users who viewed at least one report during the analysis period.",
+    )
+    metric_with_help(
+        user_cols[2],
+        "Active User Rate",
+        fmt_percent(user_adoption.get("active_user_rate")),
+        "The percentage of available users who actively viewed at least one report.",
+    )
+
+    st.subheader("Report Adoption")
+    report_cols = st.columns(3)
+    metric_with_help(
+        report_cols[0],
         "Total Reports",
-        adoption_value(report_adoption),
-        (
-            "Total reports are all reports available in the report dimension or the most complete "
-            "report-level output. Active reports have at least one view or usage event. "
-            f"{report_adoption.get('assumption', '')}"
-        ),
+        fmt_number(report_adoption.get("total_reports")),
+        "The number of reports available in the report catalogue.",
     )
-    metric_with_help(col3, "Reports At Risk", fmt_number(len(at_risk_reports)), at_risk_help)
     metric_with_help(
-        col4,
+        report_cols[1],
+        "Used Reports",
+        fmt_number(report_adoption.get("used_reports")),
+        "The number of reports that received at least one view during the analysis period.",
+    )
+    metric_with_help(
+        report_cols[2],
+        "Report Usage Rate",
+        fmt_percent(report_adoption.get("report_usage_rate")),
+        "The percentage of available reports that were viewed at least once.",
+    )
+
+    st.subheader("Monitoring")
+    monitoring_cols = st.columns(2)
+    metric_with_help(
+        monitoring_cols[0],
+        "Reports At Risk",
+        fmt_number(len(at_risk_reports)),
+        at_risk_help,
+    )
+    metric_with_help(
+        monitoring_cols[1],
         "Forecast Reliability",
-        f"{fmt_percent(reliability.get('reliable_pct'))} reliable",
+        fmt_percent(reliability.get("reliable_pct")),
         reliability_help,
     )
 
     warnings = (
-        user_adoption.get("warnings", [])
+        analysis_period.get("warnings", [])
+        + user_adoption.get("warnings", [])
         + report_adoption.get("warnings", [])
         + reliability.get("warnings", [])
     )
@@ -197,20 +227,21 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
         st.success("No at-risk reports were flagged in the available analytics outputs.")
         return
 
-    st.dataframe(at_risk_reports, hide_index=True, width="stretch")
-    selected_risk_report = st.selectbox(
-        "Select an at-risk report to inspect",
-        at_risk_reports["report_id"].tolist(),
-        format_func=lambda report_id: (
-            at_risk_reports.loc[
-                at_risk_reports["report_id"] == report_id, "report_name"
-            ].iloc[0]
-            + f" ({report_id})"
-        ),
+    display = at_risk_reports.rename(
+        columns={
+            "report_name": "Report Name",
+            "segment_or_health_status": "Segment / Status",
+            "diagnostic": "Diagnostic Summary",
+            "forecast_reliability": "Forecast Reliability",
+        }
     )
-    if st.button("Open selected report"):
-        st.session_state["selected_report_id"] = selected_risk_report
-        rerun_app()
+    visible_columns = [
+        "Report Name",
+        "Segment / Status",
+        "Diagnostic Summary",
+        "Forecast Reliability",
+    ]
+    st.dataframe(display[visible_columns], hide_index=True, width="stretch")
 
 
 def render_forecast_explorer(data: dict[str, pd.DataFrame], report_id: str) -> None:
@@ -285,10 +316,14 @@ def render_ai_insights(data: dict[str, pd.DataFrame], report_id: str) -> None:
 def main() -> None:
     data = load_app_data()
     reports = available_reports(data)
-
+    analysis_period = get_dashboard_analysis_period(data)
     st.title("Power BI Report Usage Forecasts")
-    st.caption("A lightweight reviewer app for forecasts, metrics, segments, diagnostics, and GenAI insights.")
-
+    st.caption("This dashboard explores how report usage changes over time using a synthetic Power BI-style usage dataset. The analysis focuses on understanding report adoption, user engagement, and usage trends across the historical analysis period, while identifying reports that may be at risk of declining usage or disengagement.")
+    st.markdown(f"**Analysis Period:** {fmt_analysis_period(analysis_period)}")
+    st.caption(
+        "The metrics, forecasts, diagnostics, and insights shown in this dashboard are based "
+        "on activity observed during this analysis period."
+    )
     if reports.empty:
         st.warning("No report outputs were found. Run the forecasting and analytics notebooks or pipelines first.")
         return
