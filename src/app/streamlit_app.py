@@ -618,27 +618,46 @@ def render_behaviour_insights(
         )
 
 
-def render_ai_insights(data: dict[str, pd.DataFrame], report_id: str) -> None:
+def render_ai_insights(
+    data: dict[str, pd.DataFrame], report_id: str, selected_report_name: Any = None
+) -> None:
     st.header("AI Insights")
+    report_display_name = selected_report_display_name(data, report_id, selected_report_name)
+    st.subheader(f"Now viewing AI insights for: {report_display_name}")
     insight_row = row_for_report(data["insights"], report_id)
     if insight_row.empty:
         st.caption("No AI insight file found for this report.")
         return
 
+    st.subheader("At a glance")
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.subheader("Forecast summary")
-        st.write(insight_row.get("forecast_summary", "No forecast summary available."))
+        st.write(insight_row.get("forecast_summary", "No summary available."))
     with col2:
-        st.metric("Confidence", str(insight_row.get("confidence", "N/A")).title())
+        metric_with_help(
+            col2,
+            "Confidence",
+            str(insight_row.get("confidence", "N/A")).title(),
+            "How much weight to place on the insight for this report. "
+            "This is not a measure of forecast accuracy — it reflects how well-supported "
+            "the insight is based on the available data.\n\n"
+            "High — the report has reliable forecast data and clear usage signals to draw from.\n\n"
+            "Medium — the forecast passed quality checks but some signals are limited or mixed.\n\n"
+            "Low — the forecast did not pass reliability checks or the report has limited history, "
+            "so the insight should be treated as indicative only.",
+        )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Hypotheses")
+    st.divider()
+
+    st.subheader("Recommendations")
+    st.caption("Suggested actions based on the usage patterns and forecast for this report.")
+    list_items(insight_row.get("recommended_actions"))
+
+    st.divider()
+
+    with st.expander("Hypotheses"):
+        st.caption("Possible explanations for the usage patterns observed in this report.")
         list_items(insight_row.get("hypotheses"))
-    with col2:
-        st.subheader("Recommendations")
-        list_items(insight_row.get("recommended_actions"))
 
 
 def main() -> None:
@@ -690,7 +709,7 @@ def main() -> None:
         )
         render_behaviour_insights(data, report_id, selected_report.get("report_name"), total_days)
     with tabs[3]:
-        render_ai_insights(data, report_id)
+        render_ai_insights(data, report_id, selected_report.get("report_name"))
 
 
 if __name__ == "__main__":
