@@ -293,7 +293,7 @@ def diagnostics_flags(row: pd.Series) -> pd.DataFrame:
             rows.append(
                 {
                     "Diagnostic": column.replace("_", " ").title(),
-                    "Flagged": truthy(row.get(column)),
+                    "Status": "Flagged" if truthy(row.get(column)) else "Clear",
                 }
             )
     return pd.DataFrame(rows)
@@ -527,32 +527,95 @@ def render_forecast_explorer(
         )
 
 
-def render_behaviour_insights(data: dict[str, pd.DataFrame], report_id: str) -> None:
+def render_behaviour_insights(
+    data: dict[str, pd.DataFrame],
+    report_id: str,
+    selected_report_name: Any = None,
+    total_days: int | None = None,
+) -> None:
     st.header("Behaviour Insights")
+    report_display_name = selected_report_display_name(data, report_id, selected_report_name)
+    st.subheader(f"Now viewing behaviour insights for: {report_display_name}")
     feature_row = row_for_report(data["report_features"], report_id)
     segment_row = row_for_report(data["segments"], report_id)
     diagnostic_row = row_for_report(data["diagnostics"], report_id)
 
+    days_active_raw = feature_row.get("days_active")
+    if pd.notna(days_active_raw) and total_days is not None:
+        days_active_display = f"{fmt_number(days_active_raw)} / {total_days} days"
+    else:
+        days_active_display = fmt_number(days_active_raw)
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Report segment", segment_row.get("report_segment", "N/A"))
-    col2.metric("Repeat rate", fmt_percent(feature_row.get("repeat_rate")))
-    col3.metric("Top-user concentration", fmt_percent(feature_row.get("top_user_concentration")))
-    col4.metric("Days active", fmt_number(feature_row.get("days_active")))
+    metric_with_help(
+        col1,
+        "Report segment",
+        segment_row.get("report_segment", "N/A"),
+        "A category that describes how this report is being used overall. "
+        "It helps you quickly understand where a report sits in its usage lifecycle.\n\n"
+        "Possible segments:\n\n"
+        "High Value — the report has strong viewership and a broad, active audience.\n\n"
+        "Niche — the report has a loyal or specialist audience, often with healthy repeat visits or concentrated usage.\n\n"
+        "At Risk — usage is declining and the report shows signs of low engagement or performance issues.\n\n"
+        "Inactive — the report has had little to no recent activity.",
+    )
+    metric_with_help(
+        col2,
+        "Repeat rate",
+        fmt_percent(feature_row.get("repeat_rate")),
+        "The share of report views that came from users who returned to view it more than once. "
+        "A high repeat rate suggests the report is genuinely useful and people keep coming back "
+        "to it. A low repeat rate may mean users visited once and did not find enough value to return.",
+    )
+    metric_with_help(
+        col3,
+        "Top-user concentration",
+        fmt_percent(feature_row.get("top_user_concentration")),
+        "The share of total report views driven by the top handful of users. "
+        "A high concentration means a small group is responsible for most of the traffic, "
+        "which can be a risk if those users leave or change roles. A lower concentration "
+        "suggests broader, more resilient usage across the organisation.",
+    )
+    metric_with_help(
+        col4,
+        "Days active",
+        days_active_display,
+        "The number of distinct days on which this report received at least one view during "
+        "the analysis period. More active days generally indicate a report that is regularly "
+        "consulted rather than viewed in occasional bursts.",
+    )
 
-    if not segment_row.empty and pd.notna(segment_row.get("segment_reason")):
-        st.info(segment_row.get("segment_reason"))
+    st.subheader("Diagnostic summary")
+    st.write(diagnostic_row.get("diagnostic_summary", "No diagnostic summary available."))
 
-    left, right = st.columns([1, 2])
-    with left:
-        st.subheader("Diagnostic flags")
-        flags = diagnostics_flags(diagnostic_row)
-        if flags.empty:
-            st.caption("No diagnostics available for this report.")
-        else:
-            st.dataframe(flags, hide_index=True, width="stretch")
-    with right:
-        st.subheader("Diagnostic summary")
-        st.write(diagnostic_row.get("diagnostic_summary", "No diagnostic summary available."))
+    st.subheader("Diagnostic flags")
+    flags = diagnostics_flags(diagnostic_row)
+    if flags.empty:
+        st.caption("No diagnostics available for this report.")
+    else:
+        st.dataframe(flags, hide_index=True, width="stretch")
+
+    with st.expander("Diagnostic flag definitions"):
+        st.markdown(
+            "**Performance Issue** — The report is loading slowly compared to other reports "
+            "and its usage is also declining. Slow load times can discourage users from returning, "
+            "so this combination is worth investigating."
+        )
+        st.markdown(
+            "**Engagement Issue** — Users are not returning to this report as frequently as "
+            "they do for others, and overall usage is declining. This may suggest the report "
+            "is not meeting its audience's needs or has become less relevant over time."
+        )
+        st.markdown(
+            "**Dependency Risk** — A very large share of the report's views comes from a "
+            "small number of users. If those users change roles or leave, usage could drop "
+            "significantly. Broader adoption would reduce this risk."
+        )
+        st.markdown(
+            "**Inactive Risk** — The report has had little to no recent activity. It may "
+            "have been replaced by another report, fallen out of use, or no longer be relevant "
+            "to its original audience."
+        )
 
 
 def render_ai_insights(data: dict[str, pd.DataFrame], report_id: str) -> None:
@@ -618,7 +681,14 @@ def main() -> None:
     with tabs[1]:
         render_forecast_explorer(data, report_id, selected_report.get("report_name"))
     with tabs[2]:
-        render_behaviour_insights(data, report_id)
+        start_date = analysis_period.get("start_date")
+        end_date = analysis_period.get("end_date")
+        total_days = (
+            int((end_date - start_date).days) + 1
+            if start_date is not None and end_date is not None
+            else None
+        )
+        render_behaviour_insights(data, report_id, selected_report.get("report_name"), total_days)
     with tabs[3]:
         render_ai_insights(data, report_id)
 

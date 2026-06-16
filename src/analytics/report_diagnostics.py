@@ -78,14 +78,20 @@ def build_report_diagnostics(
 
     diagnostics["main_diagnostic"] = diagnostics.apply(_main_diagnostic, axis=1)
 
-    summary_map = {
+    flag_messages = {
         "inactive_risk": "Report appears inactive based on latest usage or active days.",
         "performance_issue": "Usage is declining while load times are relatively high.",
-        "engagement_issue": "Usage is declining and repeat usage is relatively low.",
-        "dependency_risk": "A large share of views comes from one top user.",
-        "healthy_or_monitor": "No major diagnostic rule was triggered; continue monitoring.",
+        "engagement_issue": "Repeat usage is relatively low, suggesting weak ongoing engagement.",
+        "dependency_risk": "A large share of views comes from a very small number of users.",
     }
-    diagnostics["diagnostic_summary"] = diagnostics["main_diagnostic"].map(summary_map)
+
+    def _build_summary(row: pd.Series) -> str:
+        messages = [msg for flag, msg in flag_messages.items() if row.get(flag)]
+        if not messages:
+            return "No major diagnostic rule was triggered; continue monitoring."
+        return " ".join(messages)
+
+    diagnostics["diagnostic_summary"] = diagnostics.apply(_build_summary, axis=1)
 
     output_columns = [
         "report_id",
