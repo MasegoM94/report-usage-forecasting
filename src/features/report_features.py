@@ -9,6 +9,7 @@ from src.features._common import (
     _validate_input_columns,
     _validate_unique_grain,
 )
+from src.features.validate_series import validate_report_daily_series
 
 
 def build_report_daily_adoption(
@@ -377,9 +378,9 @@ def build_report_daily_series(
     )
 
     # ------------------------------------------------------------------ #
-    # Step 5 — uniqueness guard                                            #
+    # Step 5 — validate the complete series before returning               #
     # ------------------------------------------------------------------ #
-    _validate_unique_grain(result, ["report_id", "date"], "build_report_daily_series output")
+    validate_report_daily_series(result, expected_row_count=len(spine))
 
     # Attach source metadata as a non-persistent attribute for transparency
     result.attrs["active_period_source"] = active_period_source

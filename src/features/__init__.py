@@ -8,9 +8,12 @@ from src.features.report_features import (
     build_report_daily_adoption,
     build_report_daily_series,
 )
+from src.features.validate_series import SeriesValidationError, validate_report_daily_series
 
 __all__ = [
     "build_report_daily_series",
+    "validate_report_daily_series",
+    "SeriesValidationError",
     "build_report_daily_adoption",
     "add_time_series_usage_features",
     "build_user_engagement_features",
