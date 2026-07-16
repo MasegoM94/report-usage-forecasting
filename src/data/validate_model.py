@@ -217,6 +217,8 @@ def run_gx_null_checks(
                 gx.expectations.ExpectColumnValuesToNotBeNull(column="report_id"),
                 # archetype is a required routing column — every report must have one
                 gx.expectations.ExpectColumnValuesToNotBeNull(column="archetype"),
+                # launch_date must be present for every report; retire_date may be null for live reports
+                gx.expectations.ExpectColumnValuesToNotBeNull(column="launch_date"),
             ],
         ),
         "dim_page": (
