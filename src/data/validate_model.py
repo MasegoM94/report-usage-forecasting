@@ -213,7 +213,11 @@ def run_gx_null_checks(
         ),
         "dim_report": (
             tables["dim_report"],
-            [gx.expectations.ExpectColumnValuesToNotBeNull(column="report_id")],
+            [
+                gx.expectations.ExpectColumnValuesToNotBeNull(column="report_id"),
+                # archetype is a required routing column — every report must have one
+                gx.expectations.ExpectColumnValuesToNotBeNull(column="archetype"),
+            ],
         ),
         "dim_page": (
             tables["dim_page"],
