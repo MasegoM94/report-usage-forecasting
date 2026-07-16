@@ -44,6 +44,7 @@ def load_raw_tables(raw_path: Path) -> dict[str, pd.DataFrame]:
         "report_load_times": pd.read_csv(
             raw_path / "report_load_times.csv", parse_dates=["timestamp", "date"]
         ),
+        "report_archetypes": pd.read_csv(raw_path / "report_archetypes.csv"),
     }
 
     print("Loaded raw tables successfully.")
@@ -78,9 +79,20 @@ def build_dim_user(users: pd.DataFrame) -> pd.DataFrame:
     return users.copy().drop_duplicates(subset=["user_key"]).reset_index(drop=True)
 
 
-def build_dim_report(reports: pd.DataFrame) -> pd.DataFrame:
-    """Build the report dimension."""
-    return reports.copy().drop_duplicates(subset=["report_id"]).reset_index(drop=True)
+def build_dim_report(
+    reports: pd.DataFrame,
+    report_archetypes: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build the report dimension.
+
+    Merges ``launch_date`` and ``retire_date`` from ``report_archetypes`` so
+    that the semantic model is self-contained for active-period calculations.
+    ``retire_date`` is NaT / empty string for reports that are still live.
+    """
+    dim = reports.copy().drop_duplicates(subset=["report_id"]).reset_index(drop=True)
+    active_dates = report_archetypes[["report_id", "launch_date", "retire_date"]].copy()
+    dim = dim.merge(active_dates, on="report_id", how="left")
+    return dim
 
 
 def build_dim_page(report_pages: pd.DataFrame) -> pd.DataFrame:
@@ -260,7 +272,7 @@ def main() -> None:
 
     dim_date = build_dim_date(raw_tables["dates"])
     dim_user = build_dim_user(raw_tables["users"])
-    dim_report = build_dim_report(raw_tables["reports"])
+    dim_report = build_dim_report(raw_tables["reports"], raw_tables["report_archetypes"])
     dim_page = build_dim_page(raw_tables["report_pages"])
     fact_report_views = build_fact_report_views(raw_tables["report_views"], dim_date)
     fact_page_views = build_fact_page_views(
