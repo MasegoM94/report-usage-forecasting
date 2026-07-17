@@ -47,20 +47,22 @@ def build_report_diagnostics(
     avg_load_q75 = _quantile(diagnostics["avg_load_time"], 0.75)
     p90_load_q75 = _quantile(diagnostics["p90_load_time"], 0.75)
     repeat_q25 = _quantile(diagnostics["repeat_rate"], 0.25)
-    concentration_q75 = _quantile(diagnostics["top_user_concentration"], 0.75)
+    concentration_q75 = _quantile(diagnostics["top_1_user_view_share"], 0.75)
     concentration_threshold = max(0.50, concentration_q75)
 
     high_load_time = (
         diagnostics["avg_load_time"].ge(avg_load_q75)
         | diagnostics["p90_load_time"].ge(p90_load_q75)
     )
-    declining_usage = diagnostics["usage_change_pct"].lt(0)
+    # usage_change_28d_pct is null when history is insufficient or the report
+    # was newly active; lt(0) returns False for nulls, preserving safe defaults.
+    declining_usage = diagnostics["usage_change_28d_pct"].lt(0)
 
     diagnostics["performance_issue"] = high_load_time & declining_usage
     diagnostics["engagement_issue"] = (
         diagnostics["repeat_rate"].lt(repeat_q25) & declining_usage
     )
-    diagnostics["dependency_risk"] = diagnostics["top_user_concentration"].ge(
+    diagnostics["dependency_risk"] = diagnostics["top_1_user_view_share"].ge(
         concentration_threshold
     )
     diagnostics["inactive_risk"] = diagnostics["report_segment"].eq("inactive")

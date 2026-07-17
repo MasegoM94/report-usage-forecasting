@@ -37,6 +37,10 @@ def build_forecast_feature_table(
     -------
     pd.DataFrame
         Final joined feature table for downstream forecasting work.
+        Column names are preserved exactly as they appear in each input mart.
+        In particular, ``top_10pct_user_share`` (from ``mart_user_engagement``)
+        and ``top_1_user_view_share`` (when present) are kept under their
+        explicit names so their distinct semantics remain visible to modellers.
     """
     inputs = {
         "mart_report_daily_adoption": mart_report_daily_adoption,
@@ -61,11 +65,6 @@ def build_forecast_feature_table(
     _validate_unique_grain(adoption_df, key_columns, "mart_report_daily_adoption")
     _validate_unique_grain(engagement_df, key_columns, "mart_user_engagement")
     _validate_unique_grain(performance_df, key_columns, "mart_report_performance")
-
-    if "top_10pct_user_share" in engagement_df.columns and "top_user_share" not in engagement_df.columns:
-        engagement_df = engagement_df.rename(
-            columns={"top_10pct_user_share": "top_user_share"}
-        )
 
     final_df = (
         adoption_df.merge(engagement_df, on=key_columns, how="left")

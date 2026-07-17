@@ -29,7 +29,7 @@ def build_report_segments(report_features: pd.DataFrame) -> pd.DataFrame:
     users_q75 = _quantile(features["unique_users"], 0.75)
     repeat_q25 = _quantile(features["repeat_rate"], 0.25)
     repeat_q50 = _quantile(features["repeat_rate"], 0.50)
-    concentration_q75 = _quantile(features["top_user_concentration"], 0.75)
+    concentration_q75 = _quantile(features["top_1_user_view_share"], 0.75)
     avg_load_q75 = _quantile(features["avg_load_time"], 0.75)
     p90_load_q75 = _quantile(features["p90_load_time"], 0.75)
 
@@ -37,9 +37,9 @@ def build_report_segments(report_features: pd.DataFrame) -> pd.DataFrame:
     for _, row in features.iterrows():
         latest_views = row.get("latest_views")
         days_active = row.get("days_active")
-        usage_change_pct = row.get("usage_change_pct")
+        usage_change_pct = row.get("usage_change_28d_pct")
         repeat_rate = row.get("repeat_rate")
-        top_user_concentration = row.get("top_user_concentration")
+        top_user_concentration = row.get("top_1_user_view_share")
         avg_load_time = row.get("avg_load_time")
         p90_load_time = row.get("p90_load_time")
 

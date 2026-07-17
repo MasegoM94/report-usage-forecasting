@@ -38,9 +38,25 @@ def build_user_engagement_features(
     Returns
     -------
     pd.DataFrame
-        Behavioural feature mart at the `date` and `report_id` grain with:
-        `repeat_user_rate`, `top_10pct_user_share`, `days_since_last_use`,
-        and `avg_pages_per_user`.
+        Behavioural feature mart at the ``date`` and ``report_id`` grain with:
+
+        repeat_user_rate
+            Fraction of active users on a given day who had previously viewed
+            the report on an earlier date (range 0–1).
+        top_1_user_view_share
+            Fraction of total views on a given day attributable to the single
+            highest-consuming user (range 0–1). Measures single-user
+            dependency risk.
+        top_10pct_user_share
+            Fraction of total views from the top 10 percent of users by view
+            volume on a given day (range 0–1). Measures broad concentration
+            risk. Distinct from ``top_1_user_view_share``.
+        days_since_last_use
+            Calendar days elapsed since the report last had at least one view
+            event, measured from each row's date. Zero on the first active day.
+        avg_pages_per_user
+            Mean number of page views per user on a given day, derived from
+            ``fact_page_views``.
     """
     if not isinstance(fact_report_views, pd.DataFrame):
         raise TypeError("fact_report_views must be a pandas DataFrame.")
@@ -58,6 +74,7 @@ def build_user_engagement_features(
                 "date",
                 "report_id",
                 "repeat_user_rate",
+                "top_1_user_view_share",
                 "top_10pct_user_share",
                 "days_since_last_use",
                 "avg_pages_per_user",
@@ -135,19 +152,31 @@ def build_user_engagement_features(
         "repeat_user_rate"
     ].fillna(0.0)
 
-    def _top_user_share(group: pd.DataFrame) -> float:
-        """Calculate the share of views from the top 10 percent of users."""
+    def _top_1_share(group: pd.DataFrame) -> float:
+        """Fraction of views from the single highest-consuming user."""
         total_views = group["user_views"].sum()
         if total_views == 0 or group.empty:
             return 0.0
+        return float(group["user_views"].max() / total_views)
 
+    def _top_10pct_share(group: pd.DataFrame) -> float:
+        """Fraction of views from the top 10 percent of users by volume."""
+        total_views = group["user_views"].sum()
+        if total_views == 0 or group.empty:
+            return 0.0
         top_n = max(1, math.ceil(len(group) * 0.10))
         top_views = group["user_views"].nlargest(top_n).sum()
         return float(top_views / total_views)
 
+    top_1_daily = (
+        user_daily_views.groupby(["date", "report_id"])
+        .apply(_top_1_share, include_groups=False)
+        .reset_index(name="top_1_user_view_share")
+    )
+
     concentration_daily = (
         user_daily_views.groupby(["date", "report_id"])
-        .apply(_top_user_share, include_groups=False)
+        .apply(_top_10pct_share, include_groups=False)
         .reset_index(name="top_10pct_user_share")
     )
 
@@ -188,6 +217,7 @@ def build_user_engagement_features(
         repeat_users_daily[
             ["date", "report_id", "repeat_user_rate", "unique_viewers", "total_views"]
         ]
+        .merge(top_1_daily, on=["date", "report_id"], how="left")
         .merge(
             concentration_daily,
             on=["date", "report_id"],
@@ -205,6 +235,9 @@ def build_user_engagement_features(
         )
     )
 
+    engagement_mart["top_1_user_view_share"] = engagement_mart[
+        "top_1_user_view_share"
+    ].fillna(0.0)
     engagement_mart["top_10pct_user_share"] = engagement_mart[
         "top_10pct_user_share"
     ].fillna(0.0)
@@ -218,6 +251,7 @@ def build_user_engagement_features(
                 "date",
                 "report_id",
                 "repeat_user_rate",
+                "top_1_user_view_share",
                 "top_10pct_user_share",
                 "days_since_last_use",
                 "avg_pages_per_user",
