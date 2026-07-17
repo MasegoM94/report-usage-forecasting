@@ -98,13 +98,24 @@ def add_time_series_usage_features(
     date_col: str = "date",
     report_col: str = "report_id",
 ) -> pd.DataFrame:
-    """Add rolling usage features and week-over-week change by report.
+    """Add leakage-free rolling usage features and week-over-week change by report.
+
+    All rolling and lag features are anchored to the day **before** the
+    prediction date so they can be used as predictors without leaking the
+    target (``daily_views``) into itself.
+
+    Temporal leakage rule
+    ---------------------
+    When forecasting ``daily_views`` on date *t*, only observations from
+    dates < *t* are permissible as predictors.  Every rolling window here
+    therefore starts with a ``shift(1)`` before accumulating, so the window
+    for row *t* covers [t-1, t-2, …] rather than [t, t-1, …].
 
     Parameters
     ----------
     df:
-        Daily report-level feature table. The input is expected to already
-        contain one row per date and report, including zero-usage days.
+        Daily report-level feature table. Must contain one row per
+        ``(date, report_id)`` pair, including zero-usage days.
     date_col:
         Name of the date column.
     report_col:
@@ -114,8 +125,20 @@ def add_time_series_usage_features(
     -------
     pd.DataFrame
         The input dataset enriched with:
-        `views_7d`, `views_28d`, `wow_change_views`,
-        `viewers_7d`, and `viewers_28d`.
+
+        views_7d
+            Sum of ``daily_views`` over the 7 days ending *yesterday*
+            (days t-1 … t-7). NaN on the first day per report.
+        views_28d
+            Sum of ``daily_views`` over the 28 days ending *yesterday*
+            (days t-1 … t-28). NaN on the first day per report.
+        viewers_7d
+            Sum of ``unique_viewers`` over the 7 days ending *yesterday*.
+        viewers_28d
+            Sum of ``unique_viewers`` over the 28 days ending *yesterday*.
+        wow_change_views
+            Week-over-week fractional change: (views_{t-1} - views_{t-8}) /
+            views_{t-8}.  Null when the 8-day-ago value is zero or absent.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
@@ -137,23 +160,26 @@ def add_time_series_usage_features(
 
     report_groups = enriched_df.groupby(report_col, group_keys=False)
 
+    # shift(1) before rolling: window at row t covers [t-1, t-2, …]
+    # This ensures daily_views at t is never included in its own predictor.
     enriched_df["views_7d"] = report_groups["daily_views"].transform(
-        lambda series: series.rolling(window=7, min_periods=1).sum()
+        lambda s: s.shift(1).rolling(window=7, min_periods=1).sum()  # leakage guard
     )
     enriched_df["views_28d"] = report_groups["daily_views"].transform(
-        lambda series: series.rolling(window=28, min_periods=1).sum()
+        lambda s: s.shift(1).rolling(window=28, min_periods=1).sum()  # leakage guard
     )
     enriched_df["viewers_7d"] = report_groups["unique_viewers"].transform(
-        lambda series: series.rolling(window=7, min_periods=1).sum()
+        lambda s: s.shift(1).rolling(window=7, min_periods=1).sum()  # leakage guard
     )
     enriched_df["viewers_28d"] = report_groups["unique_viewers"].transform(
-        lambda series: series.rolling(window=28, min_periods=1).sum()
+        lambda s: s.shift(1).rolling(window=28, min_periods=1).sum()  # leakage guard
     )
 
-    lag_7d = report_groups["daily_views"].shift(7)
-    enriched_df["wow_change_views"] = (
-        enriched_df["daily_views"] - lag_7d
-    ).div(lag_7d.where(lag_7d.ne(0)))
+    # wow_change_views: compare yesterday (t-1) with the same day last week (t-8).
+    # shift(1) and shift(8) ensure no same-day data enters the calculation.
+    lag_1 = report_groups["daily_views"].shift(1)  # leakage guard: yesterday's views
+    lag_8 = report_groups["daily_views"].shift(8)  # same day last week
+    enriched_df["wow_change_views"] = (lag_1 - lag_8).div(lag_8.where(lag_8.ne(0)))
     enriched_df["wow_change_views"] = enriched_df["wow_change_views"].replace(
         [float("inf"), float("-inf")], pd.NA
     )
