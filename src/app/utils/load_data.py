@@ -14,7 +14,7 @@ import pandas as pd
 
 
 OUTPUT_PATHS = {
-    "forecast_features": Path("data/processed/mart_forecast_features.csv"),
+    "forecast_features": Path("data/processed/mart_report_daily_context.csv"),
     "forecasts": Path("outputs/forecasts/report_view_forecasts_latest.csv"),
     "metrics": Path("outputs/metrics/report_view_metrics_latest.csv"),
     "report_features": Path("outputs/metrics/report_features.csv"),

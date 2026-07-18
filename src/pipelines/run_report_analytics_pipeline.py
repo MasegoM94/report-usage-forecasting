@@ -28,8 +28,16 @@ def read_csv_if_exists(path: Path) -> pd.DataFrame:
 
 
 def choose_daily_usage_table(processed_dir: Path) -> Path:
-    """Choose the richest available processed daily report usage table."""
+    """Choose the richest available processed daily report usage table.
+
+    Preference order:
+    1. mart_report_daily_context.csv — canonical wide diagnostic context mart
+    2. mart_forecast_features.csv — legacy wide mart (backward compat)
+    3. mart_report_daily_adoption.csv
+    4. mart_report_daily_adoption_ts_features.csv
+    """
     candidates = [
+        processed_dir / "mart_report_daily_context.csv",
         processed_dir / "mart_forecast_features.csv",
         processed_dir / "mart_report_daily_adoption.csv",
         processed_dir / "mart_report_daily_adoption_ts_features.csv",

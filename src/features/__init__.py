@@ -1,6 +1,12 @@
 """Feature engineering modules."""
 
-from src.features.build_forecast_features import build_forecast_feature_table
+from src.features.build_forecast_features import (
+    build_forecast_feature_table,
+    build_report_daily_context,
+    build_report_insight_context,
+    validate_daily_context_schema,
+    validate_insight_context_schema,
+)
 from src.features.engagement_features import build_user_engagement_features
 from src.features.feature_registry import (
     FEATURE_REGISTRY,
@@ -24,6 +30,10 @@ __all__ = [
     "add_time_series_usage_features",
     "build_user_engagement_features",
     "build_report_performance_features",
+    "build_report_daily_context",
+    "build_report_insight_context",
+    "validate_daily_context_schema",
+    "validate_insight_context_schema",
     "build_forecast_feature_table",
     "FEATURE_REGISTRY",
     "get_feature_registry",

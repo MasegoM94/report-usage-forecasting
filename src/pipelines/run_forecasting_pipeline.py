@@ -92,8 +92,19 @@ def list_processed_csvs(processed_dir: Path) -> list[Path]:
 
 
 def choose_forecasting_input(processed_dir: Path) -> Path:
-    """Choose the best available processed report-level daily forecasting input."""
+    """Choose the best available processed report-level daily forecasting input.
+
+    Preference order:
+    1. mart_report_daily_series.csv — canonical SARIMA input (5 cols, zero-filled)
+    2. mart_report_daily_context.csv — wide context mart (also contains daily_views)
+    3. mart_forecast_features.csv — legacy wide mart (backward compat)
+    4. mart_report_daily_adoption_ts_features.csv
+    5. mart_report_daily_adoption.csv
+    6. fact_report_views.csv — raw events fallback
+    """
     preferred_candidates = [
+        processed_dir / "mart_report_daily_series.csv",
+        processed_dir / "mart_report_daily_context.csv",
         processed_dir / "mart_forecast_features.csv",
         processed_dir / "mart_report_daily_adoption_ts_features.csv",
         processed_dir / "mart_report_daily_adoption.csv",
