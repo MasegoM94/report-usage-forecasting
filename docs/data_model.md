@@ -38,10 +38,10 @@ The assumptions below reflect the implementation in notebooks `01_generate_raw_t
 - `report_views`, `report_page_views`, and `report_load_times` are treated as raw telemetry tables that become fact tables in the processed semantic model.
 - `dim_date.date_key` is derived from `date` using `YYYYMMDD` integer format.
 - `dim_user.user_key` is the canonical user join key in the semantic model. `user_id` is retained as descriptive user information where available.
-- `dim_report.report_id` is the canonical report join key.
-- `dim_page.page_key` is a surrogate key generated in the semantic build because the natural page business key is `report_id + section_id`.
+- `dim_report.report_id` is the canonical report join key. `dim_report.launch_date` and `dim_report.retire_date` anchor the active period for each report. Days outside this window are excluded from the daily series.
+- `dim_page.page_key` is a surrogate key generated in the semantic build because the natural page business key is `report_id + section_id`. The `section_id` column (not `page_id`) is the required join key in `fact_page_views` and in engagement feature functions.
 - Only reports with type `Report` or `Dashboard` receive page records in the synthetic raw data. `Paginated` reports do not receive page-level rows in `report_pages`.
-- `report_views` is generated only when at least one report view occurs for a `date x report x user` combination.
+- `report_views` is generated only when at least one report view occurs for a `date x report x user` combination. No zero-view rows are inserted into raw or fact tables.
 - `fact_report_views` keeps the report-level usage grain as `date x report x user x consumption_method x distribution_method` and stores `view_count` as the usage measure.
 - `report_page_views` is derived from `report_views`, so page-level activity exists only for report views where the report has page metadata.
 - `fact_page_views` is event-level in the current processed model. Each row represents one simulated page-view event and `page_view_count` is set to `1`.
@@ -50,6 +50,18 @@ The assumptions below reflect the implementation in notebooks `01_generate_raw_t
 - The semantic model does not currently implement slowly changing dimensions. Dimension rows are treated as the latest/static descriptive state for this first version.
 - Because the synthetic raw lookup tables are generated with unique keys, the processed table row counts are expected to match the corresponding raw table row counts.
 - The validation layer assumes dimension primary keys are unique, required fact keys are non-null, fact foreign keys exist in the matching dimensions, and raw-to-processed row counts reconcile.
+
+### Raw event data integrity
+
+Raw event facts (`fact_report_views`, `fact_page_views`, `fact_report_loads`) contain
+only rows produced by actual (synthetic) events. Zero-view days are never represented
+as fabricated rows in these tables. Missing daily activity is modelled as absence, not
+as a zero-count event row.
+
+Zero-fill for missing active days happens exclusively in the feature mart layer
+(`mart_report_daily_series`) during the `build_report_daily_series` step in Notebook 04.
+This keeps the event-level fact layer clean and prevents double-counting when the same
+source table is aggregated at different granularities.
 
 ---
 
@@ -79,6 +91,22 @@ The following tables are based on the Power BI usage schema being recreated in t
 - `fact_report_views`
 - `fact_page_views`
 - `fact_report_loads`
+
+### Feature marts (produced by Notebook 04)
+
+#### Forecasting input
+- `mart_report_daily_series` — canonical SARIMA input (5 columns, one row per active report-date, zero-filled)
+
+#### Diagnostic context
+- `mart_report_daily_adoption` — base daily views + rolling usage features
+- `mart_user_engagement` — engagement features at the date × report_id grain
+- `mart_report_performance` — load-time features at the date × report_id grain
+- `mart_report_daily_context` — wide diagnostic context (joins adoption, engagement, performance)
+
+#### GenAI / Streamlit context
+- `mart_report_insight_context` — post-forecast report-level summary (one row per report_id)
+
+See [feature_engineering.md](feature_engineering.md) for full column definitions, feature formulas, null-handling rules, and the three-mart boundary.
 
 ---
 
@@ -459,11 +487,135 @@ The model follows a star-schema pattern.
                dim_user
                   |
                   |
-dim_date ---- fact_report_views ---- dim_report
+dim_date ---- fact_report_views ---- dim_report (launch_date, retire_date)
    |                                  |
    |                                  |
-   |                              dim_page
+   |                              dim_page (section_id is the page join key)
    |
    +---- fact_page_views -----------|
    |
    +---- fact_report_loads
+```
+
+---
+
+## Feature Marts
+
+Feature marts are produced by `notebooks/04_feature_engineering.ipynb` and written
+to `data/processed/`. They are derived tables — not raw facts — and have their own
+grain and consumer contract.
+
+---
+
+## `mart_report_daily_series`
+
+**Type:** Forecasting input  
+**Business purpose:** Canonical SARIMA input. One contiguous row per active report-date.
+Missing active days are zero-filled. No fabricated events in the underlying fact tables.
+
+**Grain:**  
+One row per `(report_id, date)` within the active period.
+
+**Columns:**
+
+| Column | Type | Description |
+|---|---|---|
+| `report_id` | string | Report identifier |
+| `date` | date | Calendar date |
+| `daily_views` | int | Total report views (0 for imputed days) |
+| `is_observed_day` | int | 1 when at least one view event was recorded |
+| `is_imputed_zero` | int | 1 when zero was filled for a missing active day |
+
+`is_observed_day` and `is_imputed_zero` are mutually exclusive and always sum to 1.
+
+**Validated by:** `validate_forecasting_series_input` — raises on null `daily_views`
+or duplicate `(report_id, date)` pairs before any model is fitted.
+
+**NOT consumed by:** any diagnostic, engagement, segmentation, or analytics function.
+
+---
+
+## `mart_report_daily_adoption`
+
+**Type:** Intermediate mart  
+**Business purpose:** Base daily usage features for one report-date pair,
+including rolling views, rolling viewers, week-over-week change, trend slope, and
+usage-change metrics. Input to `mart_report_daily_context`.
+
+**Grain:**  
+One row per `(report_id, date)` within the active period.
+
+**Key columns:** `report_id`, `date`, `daily_views`, `unique_viewers`,
+`views_7d`, `views_28d`, `viewers_7d`, `viewers_28d`, `wow_change_views`,
+`usage_change_28d_pct`, `usage_trend_12w_slope`, `insufficient_history`.
+
+---
+
+## `mart_user_engagement`
+
+**Type:** Intermediate mart  
+**Business purpose:** User behavioural concentration features derived from `fact_page_views`.
+Diagnostic context only — not passed to ARIMA.
+
+**Grain:**  
+One row per `(report_id, date)`.
+
+**Key columns:** `report_id`, `date`, `top_1_user_view_share`, `top_10pct_user_share`,
+`repeat_user_rate`, `avg_pages_per_user`.
+
+**Join key note:** `fact_page_views` is joined via `section_id` (not `page_id`).
+
+---
+
+## `mart_report_performance`
+
+**Type:** Intermediate mart  
+**Business purpose:** Report load-time features derived from `fact_report_loads`.
+Diagnostic context only — not passed to ARIMA.
+
+**Grain:**  
+One row per `(report_id, date)`.
+
+**Key columns:** `report_id`, `date`, `avg_load_time`, `p90_load_time`,
+`avg_load_time_7d`, `load_time_wow_change`.
+
+---
+
+## `mart_report_daily_context`
+
+**Type:** Diagnostic context  
+**Business purpose:** Wide diagnostic table joining adoption, engagement, and performance
+features. Used by segmentation, diagnostics, and the Streamlit reviewer app.
+
+**Grain:**  
+One row per `(report_id, date)` within the active period.
+
+**Built by:** `build_report_daily_context` in `src/features/build_forecast_features.py`.
+Left-joins `mart_report_daily_adoption` with `mart_user_engagement` and
+`mart_report_performance` on `(date, report_id)`.
+
+**NOT passed to ARIMA.** All engagement and performance columns are diagnostic-only
+unless explicitly re-approved as exogenous SARIMAX inputs in a future phase.
+
+---
+
+## `mart_report_insight_context`
+
+**Type:** GenAI and Streamlit context  
+**Business purpose:** Post-forecast report-level summary for GenAI insight generation
+and the Streamlit reviewer app.
+
+**Grain:**  
+One row per `report_id`.
+
+**Built by:** `build_report_insight_context` in `src/features/build_forecast_features.py`,
+after the forecasting pipeline has written `forecast_reliable` to outputs.
+
+**Required columns:** `report_id`, `report_name`, `segment`, `forecast_reliable`.
+Additional columns from report features, segment assignments, and diagnostic flags are
+joined in where available.
+
+---
+
+For feature-level definitions (formulas, null policy, leakage guard, active-period rules,
+and the three-mart boundary), see [feature_engineering.md](feature_engineering.md).

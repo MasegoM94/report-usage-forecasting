@@ -11,10 +11,10 @@ The notebooks demonstrate an end-to-end workflow for report usage forecasting, b
 - Generates synthetic report usage data with weekly patterns, trend, noise, and zero-activity days.
 - Builds a clean semantic model from raw telemetry-style tables.
 - Validates the semantic model before feature engineering.
-- Builds daily report-level time series from user-level usage records.
-- Builds feature marts for adoption, engagement, performance, and final forecast features.
-- Applies data sufficiency checks before modelling.
-- Trains per-report Auto-ARIMA models.
+- Builds a canonical daily report series (`mart_report_daily_series`) with one row per active report-date, zero-filling missing active days.
+- Builds diagnostic context marts for engagement and performance (`mart_report_daily_context`).
+- Applies data sufficiency checks after the complete daily series is built.
+- Trains per-report Auto-ARIMA models on the univariate daily-views series.
 - Compares model performance against naive and seasonal-naive baselines.
 - Builds report and user analytics outputs, including segmentation and diagnostics.
 - Publishes forecast, metrics, segment, diagnostic, validation, and insight outputs for downstream review.
@@ -30,33 +30,50 @@ Analytics teams often know which Power BI reports exist, but not which ones are 
 - Which reports should be monitored because their usage is volatile, declining, or difficult to predict?
 - How can GenAI summaries help stakeholders understand changes in report behaviour?
 
-The current project now includes the forecasting feature layer, behavioural analytics outputs, performance telemetry features, and a lightweight batch GenAI insight layer. Richer modelling beyond the baseline remains a planned extension.
+The current project includes the forecasting feature layer, behavioural analytics outputs, performance telemetry features, and a lightweight batch GenAI insight layer. Richer modelling beyond the baseline remains a planned extension.
 
-## Simple Architecture
+## Architecture
 
-The current workflow is intentionally lightweight:
+The pipeline separates three concerns — modelling inputs, diagnostic context, and insight context — at the mart layer:
 
-1. **Synthetic usage data** is generated into raw CSV tables.
-2. **Semantic model build** creates cleaned dimensions and facts under `data/processed/`.
-3. **Validation** checks the semantic model before downstream use.
-4. **Feature engineering** in `notebooks/04_feature_engineering.ipynb` builds reusable marts under `data/processed/`.
-5. **Forecasting baseline** in `notebooks/05_forecasting_baseline.ipynb` consumes `data/processed/mart_forecast_features.csv`, trains Auto-ARIMA models, and compares them with simple baselines.
-6. **Report and user analytics** create segmentation, diagnostics, and engagement outputs.
-7. **Output tables** are written to `outputs/` for forecasts, metrics, segments, diagnostics, validation, and insights.
-8. **GenAI insights** read the output CSVs and publish structured report summaries under `outputs/insights/`.
-9. **Future layers** may add richer modelling, reviewer-friendly demo views, and stronger evaluation checks.
+```text
+Raw event facts (event-level, no fabricated zeros)
+        |
+        v
+Semantic model (dimensions + facts)
+        |
+        +---> mart_report_daily_series      <- SARIMA input: report_id, date, daily_views
+        |     (one row per active report-date; missing active days filled with zero)
+        |
+        +---> mart_report_daily_context     <- Diagnostic context: wide engagement +
+        |     (joins adoption, engagement,     performance columns; NOT passed to SARIMA)
+        |      and performance features)
+        |
+        v
+Forecasting pipeline
+  - consumes mart_report_daily_series only
+  - strips all non-target columns before fitting
+  - gates on data sufficiency after series is built
+        |
+        v
+Forecast + metrics outputs
+        |
+        +---> mart_report_insight_context   <- GenAI / Streamlit context: joins forecast
+              (post-forecast summary per         reliability with report-level features
+               report_id)
+```
 
-See [docs/architecture.md](docs/architecture.md) for a small architecture note and future direction.
+See [docs/architecture.md](docs/architecture.md) for the full pipeline tree and mart boundary rules.
 
 ## What Makes This Project Different
 
 This is not just a time-series notebook. The aim is to show how forecasting can become part of a broader usage intelligence product:
 
-- **Forecasting:** predict future report usage and compare against defensible baselines.
-- **Behavioural analytics:** implemented feature marts for repeat use, concentration, inactivity gaps, and page-depth proxies.
-- **Performance telemetry:** implemented feature marts for load-time levels, tails, and rolling performance signals.
+- **Forecasting:** univariate SARIMA on a clean zero-filled daily series with defensible baseline comparisons.
+- **Behavioural analytics:** feature marts for repeat use, concentration, inactivity gaps, and page-depth proxies.
+- **Performance telemetry:** feature marts for load-time levels, tails, and rolling performance signals.
 - **GenAI insight layer:** lightweight batch-generated report summaries that explain forecast changes, risks, and stakeholder actions in plain language.
-- **Operational thinking:** current outputs already consider schema-safe tables, forecast history, and realised-error backfill concepts.
+- **Operational thinking:** outputs include schema-safe tables, forecast history, realised-error backfill, and data-sufficiency diagnostics.
 
 The GenAI layer is intentionally lightweight in Version 0.1. It reads existing CSV outputs and writes structured report-level insights without adding a chatbot, vector database, or app layer.
 
@@ -66,8 +83,14 @@ The GenAI layer is intentionally lightweight in Version 0.1. It reads existing C
 report-usage-forecasting/
 ├── data/
 │   ├── raw/                      # Synthetic raw telemetry-style CSV tables
-│   └── processed/                # Clean semantic model CSV tables
-├── docs/                         # Architecture and data model notes
+│   └── processed/                # Clean semantic model CSV tables and feature marts
+│       ├── mart_report_daily_series.csv     # Canonical SARIMA input (5 cols)
+│       ├── mart_report_daily_context.csv    # Wide diagnostic context mart
+│       └── mart_report_insight_context.csv  # Post-forecast report-level summary
+├── docs/
+│   ├── architecture.md           # Pipeline tree and mart boundary rules
+│   ├── data_model.md             # Semantic model table definitions
+│   └── feature_engineering.md   # Feature definitions, null policy, active-period rules
 ├── notebooks/
 │   ├── 01_generate_raw_tables.ipynb
 │   ├── 02_build_semantic_model_csv.ipynb
@@ -91,10 +114,10 @@ report-usage-forecasting/
 │   │   ├── build_semantic_model.py
 │   │   └── validate_model.py
 │   ├── features/
-│   │   ├── report_features.py
-│   │   ├── engagement_features.py
-│   │   ├── performance_features.py
-│   │   └── build_forecast_features.py
+│   │   ├── report_features.py        # Daily adoption series + rolling usage features
+│   │   ├── engagement_features.py    # User engagement features (diagnostic context)
+│   │   ├── performance_features.py   # Load-time features (diagnostic context)
+│   │   └── build_forecast_features.py  # mart_report_daily_context assembler
 │   ├── models/
 │   │   ├── baselines.py
 │   │   └── evaluate.py
@@ -111,6 +134,10 @@ report-usage-forecasting/
 │       ├── run_forecasting_pipeline.py
 │       ├── run_report_analytics_pipeline.py
 │       └── run_user_analytics_pipeline.py
+├── tests/
+│   ├── test_feature_engineering_integration.py
+│   ├── test_forecasting_pipeline_smoke.py
+│   └── test_temporal_leakage.py
 ├── .gitignore
 ├── LICENSE
 ├── README.md
@@ -146,8 +173,11 @@ The data pipeline can be run in two ways:
 Pipeline flow:
 
 ```text
-data/raw/ -> data/processed/ -> outputs/validation/
-data/processed/mart_forecast_features.csv -> outputs/forecasts/ + outputs/metrics/
+data/raw/
+    -> data/processed/                         (semantic model)
+    -> data/processed/mart_report_daily_series.csv   (SARIMA input, produced by Notebook 04)
+    -> outputs/validation/                     (data quality results)
+    -> outputs/forecasts/ + outputs/metrics/   (produced by Notebook 05)
 ```
 
 ### Option 1 — Run via Notebooks (Recommended for exploration)
@@ -169,11 +199,15 @@ Run the notebooks in this order:
    - Writes validation outputs to `outputs/validation/`.
 
 4. `notebooks/04_feature_engineering.ipynb`
-   - Builds report adoption, behavioural, performance, and final forecast feature marts.
+   - Builds the canonical daily series (`mart_report_daily_series`), the wide diagnostic
+     context mart (`mart_report_daily_context`), and supporting feature marts.
+   - Applies zero-fill for missing active days; never inserts fabricated events into fact tables.
    - Writes feature tables to `data/processed/`.
 
 5. `notebooks/05_forecasting_baseline.ipynb`
-   - Reads `data/processed/mart_forecast_features.csv`.
+   - Reads `data/processed/mart_report_daily_series.csv` as the canonical SARIMA input.
+   - Strips all engagement and performance columns before fitting — only `daily_views` reaches the model.
+   - Applies data sufficiency gating after the complete series is built.
    - Trains the forecasting baseline and writes model outputs to `outputs/`.
 
 6. `notebooks/06_report_analytics.ipynb`
@@ -209,10 +243,16 @@ The scripts perform the same core workflow as the notebooks:
 - `generate_synthetic_data.py` creates raw synthetic tables in `data/raw/`.
 - `build_semantic_model.py` builds cleaned dimensions and fact tables in `data/processed/`.
 - `validate_model.py` runs validation checks and writes results to `outputs/validation/`.
-- `run_forecasting_pipeline.py` consumes `data/processed/mart_forecast_features.csv` when available, falls back to compatible processed report-level tables, and writes forecast outputs to `outputs/forecasts/` plus metrics outputs to `outputs/metrics/`.
-- `run_report_analytics_pipeline.py` writes report segments and diagnostics to `outputs/segments/` and `outputs/diagnostics/`.
-- `run_user_analytics_pipeline.py` writes user engagement features and user segments to `outputs/metrics/` and `outputs/segments/`.
-- `insight_generator.py` reads the latest report forecast, metric, segment, and diagnostic CSVs and writes structured insights to `outputs/insights/`.
+- `run_forecasting_pipeline.py` prefers `data/processed/mart_report_daily_series.csv` as its input.
+  Falls back to `mart_report_daily_context.csv` and older processed tables when the canonical file
+  is absent. Engagement and performance columns are stripped before fitting regardless of source.
+  Writes forecast outputs to `outputs/forecasts/` and metrics outputs to `outputs/metrics/`.
+- `run_report_analytics_pipeline.py` writes report segments and diagnostics to `outputs/segments/`
+  and `outputs/diagnostics/`.
+- `run_user_analytics_pipeline.py` writes user engagement features and user segments to
+  `outputs/metrics/` and `outputs/segments/`.
+- `insight_generator.py` reads the latest report forecast, metric, segment, and diagnostic CSVs
+  and writes structured insights to `outputs/insights/`.
 
 ## Current Outputs
 
@@ -244,13 +284,7 @@ Run from the project root:
 streamlit run src/app/streamlit_app.py
 ```
 
-For compatibility with the current forecasting pipeline, the generator also recognizes `report_view_forecasts_latest.csv`, `report_view_metrics_latest.csv`, and `report_model_comparison_latest.csv`.
-
-Run from the project root:
-
-```bash
-python -m src.genai.insight_generator
-```
+For compatibility with the current forecasting pipeline, the generator also recognises `report_view_forecasts_latest.csv`, `report_view_metrics_latest.csv`, and `report_model_comparison_latest.csv`.
 
 Outputs:
 
@@ -261,39 +295,41 @@ To use an OpenAI model, set `OPENAI_API_KEY` in your environment before running 
 
 ### Why This Structure?
 
-- Separates raw telemetry-style data from cleaned semantic model outputs.
-- Mirrors a real-world analytics engineering workflow.
+- Separates raw telemetry-style event data (no fabricated zeros) from derived daily summary tables.
+- Keeps forecasting inputs narrow — only the daily-views series reaches ARIMA.
+- Keeps diagnostic context separate — engagement and performance features are available for
+  segmentation and GenAI summaries but never influence the ARIMA fit.
+- Mirrors a real-world analytics engineering workflow with a clean mart layer boundary.
 - Supports both experimentation and reproducibility.
-- Makes the project easier to extend with forecasting features, behavioural analytics, and GenAI insight evaluation.
 
 ## Current Status
 
-Implemented now:
+Implemented:
 
 - Synthetic Power BI-style usage dataset.
 - Semantic model build.
 - Hybrid validation using Great Expectations and pandas checks.
-- Feature marts for report usage, engagement, performance, and forecasting.
-- Forecasting baseline with naive and seasonal-naive comparisons.
-- Report analytics.
-- User analytics.
-- Diagnostics.
-- Segmentation.
+- Canonical daily report series (`mart_report_daily_series`) with zero-fill for missing active days.
+- Wide diagnostic context mart (`mart_report_daily_context`) with engagement and performance features.
+- Forecasting baseline consuming `mart_report_daily_series` with naive and seasonal-naive comparisons.
+- Data sufficiency gating applied after the complete series is built.
+- Report analytics, user analytics, diagnostics, and segmentation.
 - Batch GenAI insight layer.
 - Lightweight Streamlit reviewer app.
+- Integration tests for the feature-engineering pipeline and forecasting pipeline smoke tests.
 
 Planned next:
 
-- Add screenshots or sample output images to the README.
 - Improve forecast evaluation with rolling-origin backtesting.
+- Add calendar regressors (holidays, known events) as explicitly approved exogenous SARIMAX inputs.
 - Add a stronger model governance table.
 - Add optional open-source forecasting model comparison.
 - Add GenAI output evaluation or prompt quality checks.
 
 ## Roadmap
 
-1. Add README screenshots or sample output images.
-2. Improve forecast evaluation with rolling-origin backtesting.
+1. Improve forecast evaluation with rolling-origin backtesting.
+2. Add calendar regressors as approved exogenous SARIMAX inputs.
 3. Add a stronger model governance table.
 4. Add optional open-source forecasting model comparison.
 5. Add GenAI output evaluation or prompt quality checks.
