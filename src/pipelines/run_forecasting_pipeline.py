@@ -92,15 +92,22 @@ def list_processed_csvs(processed_dir: Path) -> list[Path]:
 
 
 def choose_forecasting_input(processed_dir: Path) -> Path:
-    """Choose the best available processed report-level daily forecasting input.
+    """Return the path of the best available daily report-usage input.
 
-    Preference order:
-    1. mart_report_daily_series.csv — canonical SARIMA input (5 cols, zero-filled)
-    2. mart_report_daily_context.csv — wide context mart (also contains daily_views)
-    3. mart_forecast_features.csv — legacy wide mart (backward compat)
-    4. mart_report_daily_adoption_ts_features.csv
-    5. mart_report_daily_adoption.csv
-    6. fact_report_views.csv — raw events fallback
+    Preference order
+    ----------------
+    1. ``mart_report_daily_series.csv``
+       Canonical SARIMA input produced by ``build_report_daily_series``.
+       5 columns: report_id, date, daily_views, is_observed_day, is_imputed_zero.
+       Already zero-filled and contiguous — no further gap-filling needed.
+    2. ``mart_report_daily_context.csv``
+       Wide diagnostic context mart; contains daily_views but also many
+       engagement/performance columns that are stripped by
+       ``standardise_forecasting_columns`` before fitting.
+    3. ``mart_forecast_features.csv`` — legacy wide mart (backward compat)
+    4. ``mart_report_daily_adoption_ts_features.csv``
+    5. ``mart_report_daily_adoption.csv``
+    6. ``fact_report_views.csv`` — raw events fallback (requires aggregation)
     """
     preferred_candidates = [
         processed_dir / "mart_report_daily_series.csv",
@@ -123,12 +130,97 @@ def choose_forecasting_input(processed_dir: Path) -> Path:
     )
 
 
+def validate_forecasting_series_input(df: pd.DataFrame) -> None:
+    """Validate the standardised ``[date, report_id, daily_views]`` frame.
+
+    Called immediately after ``standardise_forecasting_columns`` and before any
+    model fitting.  Raises ``ValueError`` on hard failures; prints warnings for
+    softer issues so the caller can decide whether to continue.
+
+    Checks
+    ------
+    1. Required columns present.
+    2. No null ``daily_views`` — nulls cannot be fitted by pmdarima.
+    3. No duplicate ``(report_id, date)`` pairs — duplicates would silently
+       distort rolling aggregates and ARIMA fits.
+    4. Each per-report sub-series is sorted by date.
+    5. Each per-report sub-series is contiguous (no calendar-day gaps).
+
+    Parameters
+    ----------
+    df:
+        Standardised DataFrame with columns ``date``, ``report_id``,
+        ``daily_views``.  The ``date`` column must already be parsed as
+        ``datetime64``.
+
+    Raises
+    ------
+    ValueError
+        On null ``daily_views`` or duplicate ``(report_id, date)`` pairs.
+    """
+    missing = [c for c in [STANDARD_DATE_COL, STANDARD_REPORT_ID_COL, STANDARD_TARGET_COL]
+               if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Forecasting input is missing required columns: {missing}"
+        )
+
+    null_target = int(df[STANDARD_TARGET_COL].isna().sum())
+    if null_target:
+        raise ValueError(
+            f"Forecasting input has {null_target} null {STANDARD_TARGET_COL} values. "
+            "Run the feature-engineering step to produce a zero-filled series."
+        )
+
+    dup_count = int(
+        df.duplicated([STANDARD_DATE_COL, STANDARD_REPORT_ID_COL]).sum()
+    )
+    if dup_count:
+        raise ValueError(
+            f"Forecasting input has {dup_count} duplicate (report_id, date) pairs. "
+            "Aggregate or deduplicate before fitting."
+        )
+
+    unsorted_reports = []
+    gapped_reports = []
+    for rid, grp in df.groupby(STANDARD_REPORT_ID_COL, sort=False):
+        dates = grp[STANDARD_DATE_COL].sort_values()
+        if not (grp[STANDARD_DATE_COL].values == dates.values).all():
+            unsorted_reports.append(rid)
+        gaps = dates.diff().dropna()
+        if not gaps.empty and gaps.ne(pd.Timedelta("1D")).any():
+            gapped_reports.append(rid)
+
+    if unsorted_reports:
+        print(
+            f"WARNING: {len(unsorted_reports)} report(s) have unsorted dates — "
+            f"they will be sorted before fitting: {unsorted_reports[:5]}"
+        )
+    if gapped_reports:
+        print(
+            f"WARNING: {len(gapped_reports)} report(s) have date gaps in their series — "
+            f"gaps will be filled with zero before fitting: {gapped_reports[:5]}"
+        )
+
+
 def standardise_forecasting_columns(
     df: pd.DataFrame,
     source_path: Path,
     date_dim_path: Path,
 ) -> pd.DataFrame:
-    """Standardise a processed table to date, report_id, and daily_views."""
+    """Return a ``[date, report_id, daily_views]`` frame from any supported input.
+
+    Strips all engagement and performance columns that are not valid SARIMA
+    inputs.  The caller must pass the result to
+    ``validate_forecasting_series_input`` before fitting any model.
+
+    Supported inputs
+    ----------------
+    * ``mart_report_daily_series.csv`` — canonical; already has the right columns.
+    * Wide context marts — extra columns are silently dropped.
+    * Raw fact tables with legacy column names — renamed and aggregated.
+    * Tables with integer ``date_key`` — joined to ``dim_date`` for a parsed date.
+    """
     standardised = df.copy()
     rename_map = {}
 
@@ -187,7 +279,17 @@ def standardise_forecasting_columns(
 
 
 def adapt_to_forecasting_schema(features: pd.DataFrame, report_dim_path: Path) -> pd.DataFrame:
-    """Map standard processed feature columns into the notebook forecasting schema."""
+    """Translate ``[date, report_id, daily_views]`` to the internal SARIMA schema.
+
+    The internal forecasting functions in this module use legacy column names
+    (``Date``, ``Report Guid``, ``Occurrences``) inherited from the original raw
+    Power BI export.  This adapter renames the standardised columns and adds a
+    dummy ``User Id`` / ``Report Name`` so the rest of the pipeline does not need
+    to be changed.
+
+    This is a purely internal translation step.  No model features are added here
+    — the only column that reaches pmdarima is ``Occurrences`` (= ``daily_views``).
+    """
     model_input = features.copy()
 
     if report_dim_path.exists():
@@ -219,87 +321,188 @@ def adapt_to_forecasting_schema(features: pd.DataFrame, report_dim_path: Path) -
 
 
 def load_forecast_feature_input(project_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
-    """Load processed forecasting input and return standard plus modelling schemas."""
+    """Load ``mart_report_daily_series`` (or best available fallback) and validate.
+
+    Returns
+    -------
+    daily_series : pd.DataFrame
+        Standardised ``[date, report_id, daily_views]`` frame.  Engagement and
+        performance columns from wider source tables are stripped here and are
+        **not** passed to any model.
+    model_input : pd.DataFrame
+        Same data translated to the internal legacy schema used by
+        ``run_forecasts_for_reports``.
+    input_path : Path
+        Path of the source CSV that was loaded.
+
+    Raises
+    ------
+    ValueError
+        When the loaded data fails ``validate_forecasting_series_input``.
+    FileNotFoundError
+        When no suitable processed input is found.
+    """
     processed_dir = project_root / "data" / "processed"
     input_path = choose_forecasting_input(processed_dir)
 
     features_raw = pd.read_csv(input_path)
-    forecast_features = standardise_forecasting_columns(
+    daily_series = standardise_forecasting_columns(
         features_raw,
         input_path,
         processed_dir / "dim_date.csv",
     )
+    validate_forecasting_series_input(daily_series)
     model_input = adapt_to_forecasting_schema(
-        forecast_features,
+        daily_series,
         processed_dir / "dim_report.csv",
     )
-    return forecast_features, model_input.reset_index(drop=True), input_path
+    return daily_series, model_input.reset_index(drop=True), input_path
 
 
 def run_data_quality_checks(df: pd.DataFrame) -> pd.DataFrame:
-    """Return lightweight input checks used by the notebook baseline."""
-    checks = [{"check": "row_count", "value": len(df), "status": "ok" if len(df) else "fail"}]
+    """Return per-check quality summary for the standardised daily series.
 
-    for col in [DATE_COL, REPORT_ID_COL, REPORT_NAME_COL, USER_COL, VIEWS_COL]:
+    Operates on the ``[date, report_id, daily_views]`` frame returned by
+    ``standardise_forecasting_columns``, not on the legacy internal schema.
+
+    Parameters
+    ----------
+    df:
+        Standardised daily series with columns ``date``, ``report_id``,
+        ``daily_views``.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per check with columns ``check``, ``value``, ``status``.
+    """
+    checks = [{"check": "row_count", "value": len(df), "status": "ok" if len(df) else "fail"}]
+    checks.append({"check": "distinct_reports", "value": int(df[STANDARD_REPORT_ID_COL].nunique()), "status": "ok"})
+
+    for col in [STANDARD_DATE_COL, STANDARD_REPORT_ID_COL, STANDARD_TARGET_COL]:
+        if col not in df.columns:
+            checks.append({"check": f"nulls_{col}", "value": "MISSING", "status": "fail"})
+            continue
         null_count = int(df[col].isna().sum())
         checks.append(
             {
                 "check": f"nulls_{col}",
                 "value": null_count,
-                "status": "ok" if null_count == 0 else "warn",
+                "status": "ok" if null_count == 0 else ("fail" if col == STANDARD_TARGET_COL else "warn"),
             }
         )
 
-    duplicate_count = int(
-        df.duplicated(subset=[DATE_COL, REPORT_ID_COL, REPORT_NAME_COL, USER_COL, VIEWS_COL]).sum()
-    )
-    checks.append(
-        {
-            "check": "exact_duplicate_rows",
-            "value": duplicate_count,
-            "status": "ok" if duplicate_count == 0 else "warn",
-        }
-    )
-    checks.append({"check": "min_date", "value": str(df[DATE_COL].min().date()), "status": "ok"})
-    checks.append({"check": "max_date", "value": str(df[DATE_COL].max().date()), "status": "ok"})
-    negative_occurrences = int((df[VIEWS_COL] < 0).sum())
-    checks.append(
-        {
-            "check": "negative_occurrences",
-            "value": negative_occurrences,
-            "status": "ok" if negative_occurrences == 0 else "fail",
-        }
-    )
+    if STANDARD_DATE_COL in df.columns and STANDARD_REPORT_ID_COL in df.columns:
+        dup_count = int(df.duplicated([STANDARD_DATE_COL, STANDARD_REPORT_ID_COL]).sum())
+        checks.append(
+            {
+                "check": "duplicate_report_date_pairs",
+                "value": dup_count,
+                "status": "ok" if dup_count == 0 else "fail",
+            }
+        )
+
+    if STANDARD_DATE_COL in df.columns:
+        checks.append({"check": "min_date", "value": str(df[STANDARD_DATE_COL].min().date()), "status": "ok"})
+        checks.append({"check": "max_date", "value": str(df[STANDARD_DATE_COL].max().date()), "status": "ok"})
+
+    if STANDARD_TARGET_COL in df.columns:
+        negative = int((df[STANDARD_TARGET_COL] < 0).sum())
+        checks.append(
+            {
+                "check": "negative_daily_views",
+                "value": negative,
+                "status": "ok" if negative == 0 else "fail",
+            }
+        )
+        zero_rows = int((df[STANDARD_TARGET_COL] == 0).sum())
+        checks.append({"check": "zero_view_rows_preserved", "value": zero_rows, "status": "ok"})
+
     return pd.DataFrame(checks)
 
 
 def build_daily_series_for_all_reports(
     df: pd.DataFrame,
-) -> tuple[dict[str, pd.Series], dict[str, str]]:
-    """Build gap-filled daily report usage series."""
+) -> tuple[dict[str, pd.Series], dict[str, str], dict[str, dict]]:
+    """Build gap-filled daily report usage series and record per-report provenance.
+
+    When the input is ``mart_report_daily_series`` (already contiguous and
+    zero-filled), the ``reindex`` step is a no-op.  For legacy fallback inputs
+    that may have date gaps, zeros are filled so pmdarima receives a contiguous
+    series.
+
+    Zero-view days are always preserved.  Sparse reports (high zero share) are
+    gated out by ``filter_by_data_criteria``, not by dropping zeros here.
+
+    Parameters
+    ----------
+    df:
+        Internal-schema DataFrame with columns ``Date``, ``Report Guid``,
+        ``Report Name``, ``Occurrences`` (output of ``adapt_to_forecasting_schema``).
+
+    Returns
+    -------
+    series_dict : dict[str, pd.Series]
+        Per-report daily view series, date-indexed, zero-filled.
+    name_lookup : dict[str, str]
+        report_id → report_name mapping.
+    provenance : dict[str, dict]
+        Per-report metadata: ``date_min``, ``date_max``, ``n_obs``.
+    """
     d = df.copy()
     d[DATE_COL] = pd.to_datetime(d[DATE_COL])
     d[VIEWS_COL] = pd.to_numeric(d[VIEWS_COL], errors="coerce").fillna(0)
 
     series_dict: dict[str, pd.Series] = {}
     name_lookup: dict[str, str] = {}
+    provenance: dict[str, dict] = {}
+
     for rid, group in d.groupby(REPORT_ID_COL):
-        name_lookup[str(rid)] = str(group[REPORT_NAME_COL].iloc[0])
+        rid_str = str(rid)
+        name_lookup[rid_str] = str(group[REPORT_NAME_COL].iloc[0])
         daily = group.groupby(DATE_COL)[VIEWS_COL].sum().rename("Views").sort_index()
         full_index = pd.date_range(daily.index.min(), daily.index.max(), freq="D")
         daily_full = daily.reindex(full_index, fill_value=0)
         daily_full.index.name = DATE_COL
-        series_dict[str(rid)] = daily_full
+        series_dict[rid_str] = daily_full
+        provenance[rid_str] = {
+            "date_min": str(daily_full.index.min().date()),
+            "date_max": str(daily_full.index.max().date()),
+            "n_obs": int(len(daily_full)),
+        }
 
-    return series_dict, name_lookup
+    return series_dict, name_lookup, provenance
 
 
 def filter_by_data_criteria(
     series_dict: dict[str, pd.Series],
+    provenance: dict[str, dict] | None = None,
 ) -> tuple[list[str], pd.DataFrame]:
-    """Apply report-level history sufficiency checks."""
+    """Gate reports by data sufficiency and record per-report diagnostics.
+
+    Gating is applied *after* the complete zero-filled daily series is built.
+    Zeros are never removed from a passing series — sparse reports that fail
+    ``MIN_NONZERO_RATIO`` are excluded in full, not trimmed.
+
+    Parameters
+    ----------
+    series_dict:
+        Per-report daily view series from ``build_daily_series_for_all_reports``.
+    provenance:
+        Optional per-report metadata dict (date_min, date_max, n_obs) returned
+        by ``build_daily_series_for_all_reports``.  When supplied, these fields
+        are included in the diagnostics table (requirement 9).
+
+    Returns
+    -------
+    passing : list[str]
+        Report IDs that pass all sufficiency thresholds.
+    diagnostics : pd.DataFrame
+        One row per report with sufficiency counts and gate outcomes.
+    """
     records = []
     passing = []
+    prov = provenance or {}
 
     for rid, series in series_dict.items():
         total_days = int(series.size)
@@ -313,21 +516,23 @@ def filter_by_data_criteria(
             and total_views >= MIN_TOTAL_VIEWS
         )
 
-        records.append(
-            {
-                "report_id": rid,
-                "total_days": total_days,
-                "nonzero_days": nonzero_days,
-                "nonzero_ratio": nonzero_ratio,
-                "zero_share": 1 - nonzero_ratio,
-                "total_views": total_views,
-                "passes_min_days": total_days >= MIN_DAYS,
-                "passes_min_nonzero_days": nonzero_days >= MIN_NONZERO_DAYS,
-                "passes_nonzero_ratio": nonzero_ratio >= MIN_NONZERO_RATIO,
-                "passes_total_views": total_views >= MIN_TOTAL_VIEWS,
-                "passes_data_criteria": passes,
-            }
-        )
+        row: dict = {
+            "report_id": rid,
+            "date_min": prov.get(rid, {}).get("date_min"),
+            "date_max": prov.get(rid, {}).get("date_max"),
+            "n_obs": prov.get(rid, {}).get("n_obs", total_days),
+            "total_days": total_days,
+            "nonzero_days": nonzero_days,
+            "nonzero_ratio": nonzero_ratio,
+            "zero_share": 1 - nonzero_ratio,
+            "total_views": total_views,
+            "passes_min_days": total_days >= MIN_DAYS,
+            "passes_min_nonzero_days": nonzero_days >= MIN_NONZERO_DAYS,
+            "passes_nonzero_ratio": nonzero_ratio >= MIN_NONZERO_RATIO,
+            "passes_total_views": total_views >= MIN_TOTAL_VIEWS,
+            "passes_data_criteria": passes,
+        }
+        records.append(row)
         if passes:
             passing.append(rid)
 
@@ -610,8 +815,8 @@ def run_forecasts_for_reports(
     horizon_days: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Run forecasting for every report that passes data checks."""
-    series_dict, name_lookup = build_daily_series_for_all_reports(raw_df)
-    passing_data_ids, data_diag = filter_by_data_criteria(series_dict)
+    series_dict, name_lookup, provenance = build_daily_series_for_all_reports(raw_df)
+    passing_data_ids, data_diag = filter_by_data_criteria(series_dict, provenance)
 
     all_forecasts = []
     all_metrics = []
@@ -942,13 +1147,24 @@ def update_realized_errors(raw_df: pd.DataFrame, project_root: Path) -> pd.DataF
 
 
 def run_pipeline(horizon: int = FORECAST_HORIZON_DAYS) -> dict[str, object]:
-    """Run the full forecasting baseline and save outputs."""
+    """Run the full forecasting baseline and save outputs.
+
+    Data flow
+    ---------
+    1. ``load_forecast_feature_input`` selects ``mart_report_daily_series`` (or
+       best available fallback), strips to ``[date, report_id, daily_views]``,
+       and validates the series before any model sees it.
+    2. ``run_data_quality_checks`` runs on the clean standardised frame.
+    3. ``run_forecasts_for_reports`` gates reports by data sufficiency, then fits
+       pmdarima on each passing series.  No engagement or performance columns
+       enter the model.
+    """
     project_root = get_project_root()
     run_timestamp = pd.Timestamp.now()
     run_id = run_timestamp.strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
 
-    _, model_input, input_path = load_forecast_feature_input(project_root)
-    dq_table = run_data_quality_checks(model_input)
+    daily_series, model_input, input_path = load_forecast_feature_input(project_root)
+    dq_table = run_data_quality_checks(daily_series)
     forecast_table, metrics_table, data_diag, model_comparison_table = run_forecasts_for_reports(
         model_input,
         run_id=run_id,
