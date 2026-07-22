@@ -17,6 +17,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_PERIOD
 from src.models.metrics import calculate_point_metrics
 
 
@@ -35,14 +36,12 @@ REQUIRED_FEATURE_COLUMNS = {
     STANDARD_TARGET_COL,
 }
 
-SEASONALITY_DAYS = 7
 MIN_DAYS = 90
 MIN_NONZERO_DAYS = 35
 MIN_NONZERO_RATIO = 0.25
 MIN_TOTAL_VIEWS = 120
 
 TRAIN_TEST_FRACTION = 0.8
-FORECAST_HORIZON_DAYS = 30
 MAX_MAE_RATIO_TO_MEAN = 0.6
 MAX_SELECTED_WAPE = 0.75
 MAX_ZERO_SHARE = 0.75
@@ -580,11 +579,11 @@ def naive_forecast_last_value(y_train: pd.Series, steps: int) -> np.ndarray:
 
 def seasonal_naive_forecast(y_train: pd.Series, steps: int) -> np.ndarray:
     """Forecast future values by repeating the latest weekly pattern."""
-    if len(y_train) < SEASONALITY_DAYS:
+    if len(y_train) < SEASONAL_PERIOD:
         return naive_forecast_last_value(y_train, steps)
 
-    last_season = y_train.iloc[-SEASONALITY_DAYS:].to_numpy(dtype=float)
-    repeats = int(np.ceil(steps / SEASONALITY_DAYS))
+    last_season = y_train.iloc[-SEASONAL_PERIOD:].to_numpy(dtype=float)
+    repeats = int(np.ceil(steps / SEASONAL_PERIOD))
     return np.tile(last_season, repeats)[:steps]
 
 
@@ -706,7 +705,7 @@ def train_and_evaluate_arima(
     model = auto_arima(
         y_train,
         seasonal=True,
-        m=SEASONALITY_DAYS,
+        m=SEASONAL_PERIOD,
         stepwise=True,
         suppress_warnings=True,
         error_action="ignore",

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config.forecasting import SEASONAL_PERIOD
 from src.models.metrics import calculate_interval_metrics, calculate_point_metrics
 
 
@@ -111,7 +112,7 @@ class TestValidMASE:
         training = rng.integers(1, 20, size=30).astype(float)
         actual = rng.integers(1, 20, size=10).astype(float)
         forecast = actual + rng.uniform(-1, 1, size=10)
-        m = calculate_point_metrics(actual, forecast, training_series=training, seasonal_period=7)
+        m = calculate_point_metrics(actual, forecast, training_series=training, seasonal_period=SEASONAL_PERIOD)
         assert not np.isnan(m["mase"])
         assert m["mase_status"] == "ok"
 
@@ -119,7 +120,7 @@ class TestValidMASE:
         training = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
         actual = np.array([5.0, 5.0])
         forecast = np.array([4.0, 6.0])
-        m = calculate_point_metrics(actual, forecast, training_series=training, seasonal_period=7)
+        m = calculate_point_metrics(actual, forecast, training_series=training, seasonal_period=SEASONAL_PERIOD)
         # seasonal naive in-sample error: |y[7]-y[0]| = |8-1| = 7 → denom = 7
         # MAE = mean(|5-4|, |5-6|) = 1.0
         assert m["mae"] == pytest.approx(1.0)
@@ -140,7 +141,7 @@ class TestInsufficientHistoryMASE:
         m = calculate_point_metrics(
             [5.0, 6.0], [5.0, 6.0],
             training_series=[1.0, 2.0, 3.0],  # only 3 obs, need ≥8 for period=7
-            seasonal_period=7,
+            seasonal_period=SEASONAL_PERIOD,
         )
         assert np.isnan(m["mase"])
         assert "too short" in m["mase_status"]
@@ -150,7 +151,7 @@ class TestInsufficientHistoryMASE:
         m = calculate_point_metrics(
             [1.0], [1.0],
             training_series=list(range(7)),  # 7 obs, need ≥8
-            seasonal_period=7,
+            seasonal_period=SEASONAL_PERIOD,
         )
         assert np.isnan(m["mase"])
 
