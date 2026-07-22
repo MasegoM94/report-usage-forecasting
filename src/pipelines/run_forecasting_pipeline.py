@@ -91,43 +91,55 @@ def list_processed_csvs(processed_dir: Path) -> list[Path]:
     return sorted(processed_dir.glob("*.csv"))
 
 
-def choose_forecasting_input(processed_dir: Path) -> Path:
-    """Return the path of the best available daily report-usage input.
+def load_canonical_daily_series(processed_dir: Path) -> pd.DataFrame:
+    """Load ``mart_report_daily_series.csv`` — the only accepted forecasting input.
 
-    Preference order
-    ----------------
-    1. ``mart_report_daily_series.csv``
-       Canonical SARIMA input produced by ``build_report_daily_series``.
-       5 columns: report_id, date, daily_views, is_observed_day, is_imputed_zero.
-       Already zero-filled and contiguous — no further gap-filling needed.
-    2. ``mart_report_daily_context.csv``
-       Wide diagnostic context mart; contains daily_views but also many
-       engagement/performance columns that are stripped by
-       ``standardise_forecasting_columns`` before fitting.
-    3. ``mart_forecast_features.csv`` — legacy wide mart (backward compat)
-    4. ``mart_report_daily_adoption_ts_features.csv``
-    5. ``mart_report_daily_adoption.csv``
-    6. ``fact_report_views.csv`` — raw events fallback (requires aggregation)
+    Raises ``FileNotFoundError`` if the canonical file is absent.  Does not
+    fall back to any other table.  Does not guess column aliases.  Does not
+    aggregate rows.
+
+    Parameters
+    ----------
+    processed_dir:
+        ``data/processed/`` directory that must contain
+        ``mart_report_daily_series.csv``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Raw contents of ``mart_report_daily_series.csv`` with ``date`` parsed
+        as ``datetime64``.  Columns: at minimum ``report_id``, ``date``,
+        ``daily_views`` (plus optional indicator columns).
+
+    Raises
+    ------
+    FileNotFoundError
+        When ``mart_report_daily_series.csv`` is not present.
+    ValueError
+        When the file is present but is missing one or more of
+        ``report_id``, ``date``, ``daily_views``.
     """
-    preferred_candidates = [
-        processed_dir / "mart_report_daily_series.csv",
-        processed_dir / "mart_report_daily_context.csv",
-        processed_dir / "mart_forecast_features.csv",
-        processed_dir / "mart_report_daily_adoption_ts_features.csv",
-        processed_dir / "mart_report_daily_adoption.csv",
-        processed_dir / "fact_report_views.csv",
+    path = processed_dir / "mart_report_daily_series.csv"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Canonical forecasting input not found: {path}\n"
+            "Run notebooks/04_feature_engineering.ipynb (or "
+            "src/features/report_features.build_report_daily_series) to produce "
+            "mart_report_daily_series.csv before running the forecasting pipeline."
+        )
+    df = pd.read_csv(path)
+    missing = [
+        c for c in [STANDARD_DATE_COL, STANDARD_REPORT_ID_COL, STANDARD_TARGET_COL]
+        if c not in df.columns
     ]
-
-    for candidate in preferred_candidates:
-        if candidate.exists():
-            return candidate
-
-    available = "\n".join(str(path) for path in list_processed_csvs(processed_dir))
-    raise FileNotFoundError(
-        "No suitable processed forecasting input was found. "
-        "Run the upstream data and feature-engineering notebooks first.\n\n"
-        f"Available processed CSVs:\n{available or 'No processed CSV files found.'}"
-    )
+    if missing:
+        raise ValueError(
+            f"mart_report_daily_series.csv is missing required columns: {missing}. "
+            f"Present columns: {list(df.columns)}. "
+            "Re-run the feature-engineering step to regenerate the file."
+        )
+    df[STANDARD_DATE_COL] = pd.to_datetime(df[STANDARD_DATE_COL])
+    return df
 
 
 def validate_forecasting_series_input(df: pd.DataFrame) -> None:
@@ -345,14 +357,14 @@ def adapt_to_forecasting_schema(features: pd.DataFrame, report_dim_path: Path) -
 
 
 def load_forecast_feature_input(project_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
-    """Load ``mart_report_daily_series`` (or best available fallback) and validate.
+    """Load ``mart_report_daily_series.csv`` and validate for SARIMA input.
 
     Returns
     -------
     daily_series : pd.DataFrame
-        Standardised ``[date, report_id, daily_views]`` frame.  Engagement and
-        performance columns from wider source tables are stripped here and are
-        **not** passed to any model.
+        ``[date, report_id, daily_views]`` frame (plus optional indicator
+        columns) loaded directly from the canonical mart.  No alias guessing
+        or aggregation is performed.
     model_input : pd.DataFrame
         Same data translated to the internal legacy schema used by
         ``run_forecasts_for_reports``.
@@ -361,23 +373,17 @@ def load_forecast_feature_input(project_root: Path) -> tuple[pd.DataFrame, pd.Da
 
     Raises
     ------
+    FileNotFoundError
+        When ``mart_report_daily_series.csv`` is absent.
     ValueError
         When the loaded data fails ``validate_forecasting_series_input``.
-    FileNotFoundError
-        When no suitable processed input is found.
     """
     processed_dir = project_root / "data" / "processed"
-    input_path = choose_forecasting_input(processed_dir)
-
-    features_raw = pd.read_csv(input_path)
-    daily_series = standardise_forecasting_columns(
-        features_raw,
-        input_path,
-        processed_dir / "dim_date.csv",
-    )
+    input_path = processed_dir / "mart_report_daily_series.csv"
+    daily_series = load_canonical_daily_series(processed_dir)
     validate_forecasting_series_input(daily_series)
     model_input = adapt_to_forecasting_schema(
-        daily_series,
+        daily_series[[STANDARD_DATE_COL, STANDARD_REPORT_ID_COL, STANDARD_TARGET_COL]],
         processed_dir / "dim_report.csv",
     )
     return daily_series, model_input.reset_index(drop=True), input_path

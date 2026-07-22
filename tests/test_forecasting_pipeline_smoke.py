@@ -51,38 +51,32 @@ def series_csv(tmp_path_factory):
 # ---------------------------------------------------------------------------
 
 class TestForecastingPipelineSmoke:
-    """Verifies the standardise → validate → adapt boundary with the new source."""
+    """Verifies the load → validate → adapt boundary with the canonical source."""
 
-    def test_choose_forecasting_input_finds_series_csv(self, series_csv):
-        """choose_forecasting_input should prefer mart_report_daily_series.csv."""
-        from src.pipelines.run_forecasting_pipeline import choose_forecasting_input
+    def test_canonical_loader_finds_series_csv(self, series_csv):
+        """load_canonical_daily_series must load mart_report_daily_series.csv."""
+        from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
         d, _ = series_csv
-        chosen = choose_forecasting_input(d)
-        assert chosen.name == "mart_report_daily_series.csv"
+        df = load_canonical_daily_series(d)
+        assert set(["report_id", "date", "daily_views"]).issubset(df.columns)
 
-    def test_standardise_strips_to_three_columns(self, series_csv):
-        """After standardise, only [date, report_id, daily_views] remain."""
-        from src.pipelines.run_forecasting_pipeline import (
-            choose_forecasting_input,
-            standardise_forecasting_columns,
-        )
+    def test_canonical_loader_strips_to_core_columns(self, series_csv):
+        """Canonical loader returns at least [date, report_id, daily_views]."""
+        from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
         d, _ = series_csv
-        raw = __import__("pandas").read_csv(choose_forecasting_input(d))
-        std = standardise_forecasting_columns(raw, choose_forecasting_input(d), d / "dim_date.csv")
-        assert set(std.columns) == {"date", "report_id", "daily_views"}
+        df = load_canonical_daily_series(d)
+        assert {"date", "report_id", "daily_views"}.issubset(set(df.columns))
 
     def test_validate_passes_on_clean_series(self, series_csv):
         """validate_forecasting_series_input should not raise on the clean fixture."""
         import pandas as pd
         from src.pipelines.run_forecasting_pipeline import (
-            choose_forecasting_input,
-            standardise_forecasting_columns,
+            load_canonical_daily_series,
             validate_forecasting_series_input,
         )
         d, _ = series_csv
-        raw = pd.read_csv(choose_forecasting_input(d))
-        std = standardise_forecasting_columns(raw, choose_forecasting_input(d), d / "dim_date.csv")
-        validate_forecasting_series_input(std)  # must not raise
+        df = load_canonical_daily_series(d)
+        validate_forecasting_series_input(df)  # must not raise
 
     def test_validate_raises_on_null_target(self, series_csv, tmp_path):
         """validate_forecasting_series_input must raise on null daily_views."""
@@ -105,34 +99,30 @@ class TestForecastingPipelineSmoke:
         with pytest.raises(ValueError, match="duplicate"):
             validate_forecasting_series_input(dup)
 
-    def test_zero_view_days_survive_standardise(self, series_csv):
-        """Zero-view days in the fixture must not be dropped by standardise."""
+    def test_zero_view_days_preserved_by_loader(self, series_csv):
+        """Zero-view days in the canonical file must be returned unchanged."""
         import pandas as pd
-        from src.pipelines.run_forecasting_pipeline import (
-            choose_forecasting_input,
-            standardise_forecasting_columns,
-        )
+        from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
         d, daily = series_csv
-        raw = pd.read_csv(choose_forecasting_input(d))
-        std = standardise_forecasting_columns(raw, choose_forecasting_input(d), d / "dim_date.csv")
+        df = load_canonical_daily_series(d)
         zero_in_fixture = int((daily["daily_views"] == 0).sum())
-        zero_in_std = int((std["daily_views"] == 0).sum())
-        assert zero_in_std == zero_in_fixture, (
-            f"Zero-view rows dropped: fixture had {zero_in_fixture}, standardised has {zero_in_std}"
+        zero_in_loaded = int((df["daily_views"] == 0).sum())
+        assert zero_in_loaded == zero_in_fixture, (
+            f"Zero-view rows changed: fixture had {zero_in_fixture}, loader returned {zero_in_loaded}"
         )
 
     def test_adapt_produces_legacy_schema(self, series_csv):
         """adapt_to_forecasting_schema must return the internal legacy column set."""
         import pandas as pd
         from src.pipelines.run_forecasting_pipeline import (
-            choose_forecasting_input,
-            standardise_forecasting_columns,
+            load_canonical_daily_series,
             adapt_to_forecasting_schema,
         )
         d, _ = series_csv
-        raw = pd.read_csv(choose_forecasting_input(d))
-        std = standardise_forecasting_columns(raw, choose_forecasting_input(d), d / "dim_date.csv")
-        model_input = adapt_to_forecasting_schema(std, d / "dim_report.csv")
+        df = load_canonical_daily_series(d)
+        model_input = adapt_to_forecasting_schema(
+            df[["date", "report_id", "daily_views"]], d / "dim_report.csv"
+        )
         expected_cols = {"Date", "Report Guid", "Report Name", "User Id", "Occurrences"}
         assert expected_cols.issubset(set(model_input.columns))
 
@@ -140,14 +130,14 @@ class TestForecastingPipelineSmoke:
         """No engagement or rolling-feature columns must appear in adapt output."""
         import pandas as pd
         from src.pipelines.run_forecasting_pipeline import (
-            choose_forecasting_input,
-            standardise_forecasting_columns,
+            load_canonical_daily_series,
             adapt_to_forecasting_schema,
         )
         d, _ = series_csv
-        raw = pd.read_csv(choose_forecasting_input(d))
-        std = standardise_forecasting_columns(raw, choose_forecasting_input(d), d / "dim_date.csv")
-        model_input = adapt_to_forecasting_schema(std, d / "dim_report.csv")
+        df = load_canonical_daily_series(d)
+        model_input = adapt_to_forecasting_schema(
+            df[["date", "report_id", "daily_views"]], d / "dim_report.csv"
+        )
         forbidden = {
             "top_1_user_view_share", "top_10pct_user_share", "repeat_user_rate",
             "avg_load_time", "views_7d", "views_28d", "is_observed_day", "is_imputed_zero",
@@ -248,3 +238,54 @@ class TestBuildDailySeriesAdherence:
             f"Values changed in transit: {list(s.values)} != {views_in}"
         )
         assert len(s) == 10
+
+
+# ---------------------------------------------------------------------------
+# Strict data contract — load_canonical_daily_series
+# ---------------------------------------------------------------------------
+
+class TestStrictForecastingInput:
+    """load_canonical_daily_series must accept only the one canonical file."""
+
+    def test_canonical_file_loads_successfully(self, tmp_path):
+        processed = tmp_path / "processed"
+        processed.mkdir()
+        pd.DataFrame({
+            "report_id": ["R1", "R1"],
+            "date": ["2025-01-01", "2025-01-02"],
+            "daily_views": [5, 3],
+        }).to_csv(processed / "mart_report_daily_series.csv", index=False)
+        from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
+        df = load_canonical_daily_series(processed)
+        assert set(["report_id", "date", "daily_views"]).issubset(df.columns)
+        assert len(df) == 2
+
+    def test_absent_canonical_file_raises_file_not_found(self, tmp_path):
+        processed = tmp_path / "processed"
+        processed.mkdir()
+        from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
+        with pytest.raises(FileNotFoundError, match="mart_report_daily_series"):
+            load_canonical_daily_series(processed)
+
+    def test_alternate_fallback_file_is_ignored(self, tmp_path):
+        """Canonical absent; only a fallback CSV exists — must still raise."""
+        processed = tmp_path / "processed"
+        processed.mkdir()
+        pd.DataFrame({
+            "report_id": ["R1"],
+            "date": ["2025-01-01"],
+            "daily_views": [5],
+        }).to_csv(processed / "mart_report_daily_context.csv", index=False)
+        from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
+        with pytest.raises(FileNotFoundError, match="mart_report_daily_series"):
+            load_canonical_daily_series(processed)
+
+    def test_invalid_schema_raises_clear_error(self, tmp_path):
+        processed = tmp_path / "processed"
+        processed.mkdir()
+        pd.DataFrame({"wrong_col": [1], "another": [2]}).to_csv(
+            processed / "mart_report_daily_series.csv", index=False
+        )
+        from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
+        with pytest.raises(ValueError, match="missing required columns"):
+            load_canonical_daily_series(processed)
