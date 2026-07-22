@@ -1,12 +1,16 @@
-"""Smoke test: forecasting pipeline can consume mart_report_daily_series.
+"""Smoke tests: forecasting pipeline and notebook 05 import contract.
 
-Requirement 12 — add a smoke test confirming the pipeline can forecast
-from the canonical narrow daily series.
-
-Uses a minimal deterministic fixture written to a tmp_path so no repo-level
-processed CSV files are needed.
+Tests verify:
+- The canonical strict loader accepts only mart_report_daily_series.csv.
+- validate_forecasting_series_input raises clearly on structural violations.
+- build_daily_series_for_all_reports does not manufacture or fill missing dates.
+- Notebook 05 contains no inline function definitions — all logic is imported
+  from src.pipelines.run_forecasting_pipeline.
 """
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -289,3 +293,97 @@ class TestStrictForecastingInput:
         from src.pipelines.run_forecasting_pipeline import load_canonical_daily_series
         with pytest.raises(ValueError, match="missing required columns"):
             load_canonical_daily_series(processed)
+
+
+# ---------------------------------------------------------------------------
+# Notebook 05 import contract
+# ---------------------------------------------------------------------------
+
+_NOTEBOOK_PATH = (
+    Path(__file__).resolve().parents[1] / "notebooks" / "05_forecasting_baseline.ipynb"
+)
+
+# Functions that must NOT appear as inline definitions in notebook 05 —
+# they must be imported from src.pipelines.run_forecasting_pipeline.
+_FORBIDDEN_DEF_NAMES = {
+    "generate_synthetic_report_usage",
+    "choose_forecasting_input",
+    "standardise_forecasting_columns",
+    "load_forecast_series_input",
+    "build_daily_series_for_all_reports",
+    "filter_by_data_criteria",
+    "naive_forecast_last_value",
+    "seasonal_naive_forecast",
+    "wape",
+    "build_forecast_frame",
+    "build_model_comparison",
+    "select_best_model",
+    "apply_reliability_checks",
+    "train_and_evaluate_arima",
+    "run_forecasts_for_reports",
+    "run_data_quality_checks",
+    "save_latest_outputs",
+    "append_forecasts_history",
+    "append_metrics_history",
+    "update_realized_errors",
+}
+
+_REQUIRED_IMPORTS = {
+    "load_canonical_daily_series",
+    "validate_forecasting_series_input",
+    "load_forecast_feature_input",
+    "run_data_quality_checks",
+    "build_daily_series_for_all_reports",
+    "filter_by_data_criteria",
+    "run_forecasts_for_reports",
+    "save_latest_outputs",
+    "get_project_root",
+}
+
+
+class TestNotebook05ImportContract:
+    """Verify notebook 05 does not redefine pipeline logic inline."""
+
+    @pytest.fixture(scope="class")
+    def nb_source(self):
+        with open(_NOTEBOOK_PATH) as f:
+            nb = json.load(f)
+        # Concatenate all code-cell source lines into one string
+        all_code = "\n".join(
+            "".join(cell["source"])
+            for cell in nb["cells"]
+            if cell["cell_type"] == "code"
+        )
+        return all_code
+
+    def test_no_inline_function_definitions(self, nb_source):
+        """Forbidden functions must not be defined inline in the notebook."""
+        import re
+        defined = {
+            m.group(1)
+            for m in re.finditer(r"^def\s+(\w+)\s*\(", nb_source, re.MULTILINE)
+        }
+        leaked = defined & _FORBIDDEN_DEF_NAMES
+        assert not leaked, (
+            f"These functions are defined inline in notebook 05 but must be "
+            f"imported from src/: {sorted(leaked)}"
+        )
+
+    def test_required_imports_present(self, nb_source):
+        """Required src functions must be imported in the notebook."""
+        missing = {name for name in _REQUIRED_IMPORTS if name not in nb_source}
+        assert not missing, (
+            f"These functions are not imported in notebook 05: {sorted(missing)}"
+        )
+
+    def test_canonical_input_file_named(self, nb_source):
+        """The notebook must reference the canonical input filename."""
+        assert "mart_report_daily_series" in nb_source, (
+            "Notebook 05 must reference mart_report_daily_series.csv as the input file."
+        )
+
+    def test_no_synthetic_data_generation(self, nb_source):
+        """Notebook 05 must not generate synthetic data inline."""
+        assert "generate_synthetic" not in nb_source, (
+            "Notebook 05 must not call or define generate_synthetic_* functions."
+        )
