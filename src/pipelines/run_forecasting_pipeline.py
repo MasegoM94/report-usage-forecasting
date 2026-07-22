@@ -17,7 +17,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from src.models.metrics import calculate_point_metrics
 
 
 DATE_COL = "Date"
@@ -588,14 +588,6 @@ def seasonal_naive_forecast(y_train: pd.Series, steps: int) -> np.ndarray:
     return np.tile(last_season, repeats)[:steps]
 
 
-def wape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Return weighted absolute percentage error."""
-    denom = np.abs(y_true).sum()
-    if denom == 0:
-        return np.nan
-    return float(np.abs(y_true - y_pred).sum() / denom)
-
-
 def build_forecast_frame(
     index: pd.DatetimeIndex,
     forecast_values: np.ndarray,
@@ -780,19 +772,25 @@ def train_and_evaluate_arima(
     p, d, q = model.order
     seasonal_p, seasonal_d, seasonal_q, m = model.seasonal_order
 
+    _m_arima = calculate_point_metrics(y_test.to_numpy(), fc_test, training_series=y_train.to_numpy())
+    _m_naive = calculate_point_metrics(y_test.to_numpy(), naive_fc, training_series=y_train.to_numpy())
+    _m_snv   = calculate_point_metrics(y_test.to_numpy(), seasonal_naive_fc, training_series=y_train.to_numpy())
+
     metrics = {
         "n_obs": len(y),
         "n_train": len(y_train),
         "n_test": len(y_test),
-        "mae_arima": mean_absolute_error(y_test, fc_test),
-        "rmse_arima": np.sqrt(mean_squared_error(y_test, fc_test)),
-        "wape_arima": wape(y_test.to_numpy(), fc_test),
-        "mae_naive": mean_absolute_error(y_test, naive_fc),
-        "rmse_naive": np.sqrt(mean_squared_error(y_test, naive_fc)),
-        "wape_naive": wape(y_test.to_numpy(), naive_fc),
-        "mae_seasonal_naive": mean_absolute_error(y_test, seasonal_naive_fc),
-        "rmse_seasonal_naive": np.sqrt(mean_squared_error(y_test, seasonal_naive_fc)),
-        "wape_seasonal_naive": wape(y_test.to_numpy(), seasonal_naive_fc),
+        "mae_arima": _m_arima["mae"],
+        "rmse_arima": _m_arima["rmse"],
+        "wape_arima": _m_arima["wape"],
+        "bias_arima": _m_arima["bias"],
+        "mase_arima": _m_arima["mase"],
+        "mae_naive": _m_naive["mae"],
+        "rmse_naive": _m_naive["rmse"],
+        "wape_naive": _m_naive["wape"],
+        "mae_seasonal_naive": _m_snv["mae"],
+        "rmse_seasonal_naive": _m_snv["rmse"],
+        "wape_seasonal_naive": _m_snv["wape"],
         "avg_level_test": y_test.mean(),
         "p": p,
         "d": d,

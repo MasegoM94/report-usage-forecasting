@@ -1,38 +1,34 @@
-"""Forecast evaluation metrics."""
+"""Deprecated: use src.models.metrics instead.
+
+``calculate_forecast_metrics`` is retained for backwards compatibility only.
+It returned MAPE, which is undefined for zero-valued actuals and has been
+removed from the primary metric set.  New code should call
+``src.models.metrics.calculate_point_metrics``, which returns MAE, RMSE,
+WAPE, MASE, and bias without silently excluding zero rows.
+"""
 
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import pandas as pd
 
+from src.models.metrics import calculate_point_metrics  # noqa: F401 — re-export
+
 
 def calculate_forecast_metrics(actual: pd.Series, forecast: pd.Series) -> dict[str, float]:
-    """Calculate MAE, RMSE, and MAPE with safe zero-actual handling."""
-    actual_values = pd.to_numeric(pd.Series(actual), errors="coerce")
-    forecast_values = pd.to_numeric(pd.Series(forecast), errors="coerce")
+    """Deprecated — use calculate_point_metrics from src.models.metrics.
 
-    aligned = pd.concat(
-        [actual_values.rename("actual"), forecast_values.rename("forecast")],
-        axis=1,
-    ).dropna()
-
-    if aligned.empty:
-        return {"mae": np.nan, "rmse": np.nan, "mape": np.nan}
-
-    errors = aligned["actual"] - aligned["forecast"]
-    absolute_errors = errors.abs()
-
-    nonzero_actuals = aligned["actual"] != 0
-    if nonzero_actuals.any():
-        mape = (
-            absolute_errors.loc[nonzero_actuals]
-            / aligned.loc[nonzero_actuals, "actual"].abs()
-        ).mean() * 100
-    else:
-        mape = np.nan
-
-    return {
-        "mae": float(absolute_errors.mean()),
-        "rmse": float(np.sqrt(np.square(errors).mean())),
-        "mape": float(mape) if not pd.isna(mape) else np.nan,
-    }
+    Returns MAE and RMSE via the new module; ``mape`` is always ``np.nan``
+    because MAPE has been removed as a primary metric (undefined on zero
+    actuals, asymmetric on small actuals).
+    """
+    warnings.warn(
+        "calculate_forecast_metrics is deprecated and will be removed in a future release. "
+        "Use src.models.metrics.calculate_point_metrics instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    m = calculate_point_metrics(actual, forecast)
+    return {"mae": m["mae"], "rmse": m["rmse"], "mape": np.nan}
