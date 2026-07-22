@@ -310,7 +310,6 @@ _FORBIDDEN_DEF_NAMES = {
     "choose_forecasting_input",
     "standardise_forecasting_columns",
     "load_forecast_series_input",
-    "build_daily_series_for_all_reports",
     "filter_by_data_criteria",
     "naive_forecast_last_value",
     "seasonal_naive_forecast",
@@ -326,6 +325,15 @@ _FORBIDDEN_DEF_NAMES = {
     "append_forecasts_history",
     "append_metrics_history",
     "update_realized_errors",
+    # New evaluation framework — must be imported, not reimplemented
+    "generate_rolling_splits",
+    "evaluate_models_across_folds",
+    "calculate_horizon_bucket_metrics",
+    "summarise_model_performance",
+    "select_models",
+    "refit_and_forecast",
+    "build_production_forecast",
+    "build_daily_series_for_all_reports",
 }
 
 _REQUIRED_IMPORTS = {
@@ -335,9 +343,13 @@ _REQUIRED_IMPORTS = {
     "run_data_quality_checks",
     "build_daily_series_for_all_reports",
     "filter_by_data_criteria",
-    "run_forecasts_for_reports",
-    "save_latest_outputs",
     "get_project_root",
+    # New evaluation framework
+    "generate_rolling_splits",
+    "evaluate_models_across_folds",
+    "summarise_model_performance",
+    "select_models",
+    "build_production_forecast",
 }
 
 
