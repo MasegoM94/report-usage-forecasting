@@ -154,3 +154,97 @@ class TestForecastingPipelineSmoke:
         }
         leaked = forbidden & set(model_input.columns)
         assert not leaked, f"Engagement/feature columns leaked into model_input: {leaked}"
+
+
+# ---------------------------------------------------------------------------
+# Sprint 1 fix — forecasting layer must not manufacture missing dates
+# ---------------------------------------------------------------------------
+
+def _make_adapted_input(
+    report_id: str,
+    dates: "list[pd.Timestamp]",
+    views: "list[int]",
+) -> "pd.DataFrame":
+    """Build a minimal internal-schema frame (output of adapt_to_forecasting_schema)."""
+    return pd.DataFrame({
+        "Date": dates,
+        "Report Guid": report_id,
+        "Report Name": f"{report_id} name",
+        "User Id": "PROCESSED_DAILY_TOTAL",
+        "Occurrences": views,
+    })
+
+
+class TestBuildDailySeriesAdherence:
+    """Prove build_daily_series_for_all_reports treats the input as authoritative."""
+
+    def test_existing_zero_day_remains_zero(self):
+        """A zero-view day in the source series must not be altered."""
+        from src.pipelines.run_forecasting_pipeline import build_daily_series_for_all_reports
+        dates = pd.date_range("2025-01-01", periods=5, freq="D").tolist()
+        views = [10, 0, 8, 0, 12]   # two genuine zero days
+        df = _make_adapted_input("R_ZERO", dates, views)
+        series_dict, _, _ = build_daily_series_for_all_reports(df)
+        s = series_dict["R_ZERO"]
+        assert s.iloc[1] == 0, "zero on day 2 was altered"
+        assert s.iloc[3] == 0, "zero on day 4 was altered"
+
+    def test_missing_date_raises_error(self):
+        """A gap in the standardised frame must raise ValueError before fitting."""
+        from src.pipelines.run_forecasting_pipeline import validate_forecasting_series_input
+        # Days 1, 2, 4, 5 — day 3 is missing
+        dates = [
+            pd.Timestamp("2025-01-01"),
+            pd.Timestamp("2025-01-02"),
+            pd.Timestamp("2025-01-04"),   # gap here
+            pd.Timestamp("2025-01-05"),
+        ]
+        df = pd.DataFrame({
+            "date": dates,
+            "report_id": "R_GAP",
+            "daily_views": [5, 3, 7, 2],
+        })
+        with pytest.raises(ValueError) as exc_info:
+            validate_forecasting_series_input(df)
+        msg = str(exc_info.value)
+        assert "R_GAP" in msg, "error must identify the report"
+        assert "2025-01-03" in msg, "error must state the expected missing date"
+        assert "2025-01-02" in msg, "error must show the date before the gap"
+        assert "2025-01-04" in msg, "error must show the date after the gap"
+
+    def test_no_rows_added_by_forecasting_pipeline(self):
+        """Row count out of build_daily_series_for_all_reports must equal row count in."""
+        from src.pipelines.run_forecasting_pipeline import build_daily_series_for_all_reports
+        dates = pd.date_range("2025-03-01", periods=7, freq="D").tolist()
+        views = [4, 0, 6, 2, 0, 8, 3]
+        df = _make_adapted_input("R_COUNT", dates, views)
+        series_dict, _, provenance = build_daily_series_for_all_reports(df)
+        assert len(series_dict["R_COUNT"]) == 7, (
+            f"Expected 7 rows, got {len(series_dict['R_COUNT'])} — "
+            "pipeline must not manufacture rows"
+        )
+        assert provenance["R_COUNT"]["n_obs"] == 7
+
+    def test_valid_continuous_series_passes_unchanged(self):
+        """A clean continuous series must survive validate + build with identical values."""
+        from src.pipelines.run_forecasting_pipeline import (
+            build_daily_series_for_all_reports,
+            validate_forecasting_series_input,
+        )
+        dates = pd.date_range("2025-06-01", periods=10, freq="D")
+        views_in = [5, 0, 3, 7, 0, 9, 1, 4, 0, 6]
+
+        std = pd.DataFrame({
+            "date": dates,
+            "report_id": "R_VALID",
+            "daily_views": views_in,
+        })
+        validate_forecasting_series_input(std)  # must not raise
+
+        df_adapted = _make_adapted_input("R_VALID", dates.tolist(), views_in)
+        series_dict, _, _ = build_daily_series_for_all_reports(df_adapted)
+        s = series_dict["R_VALID"]
+        assert list(s.values) == views_in, (
+            f"Values changed in transit: {list(s.values)} != {views_in}"
+        )
+        assert len(s) == 10

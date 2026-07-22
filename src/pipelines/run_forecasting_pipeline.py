@@ -134,17 +134,19 @@ def validate_forecasting_series_input(df: pd.DataFrame) -> None:
     """Validate the standardised ``[date, report_id, daily_views]`` frame.
 
     Called immediately after ``standardise_forecasting_columns`` and before any
-    model fitting.  Raises ``ValueError`` on hard failures; prints warnings for
-    softer issues so the caller can decide whether to continue.
+    model fitting.  Every check raises ``ValueError`` on failure — there are no
+    silent warnings.  ``mart_report_daily_series`` is treated as authoritative:
+    the forecasting layer must never manufacture or fill missing dates.
 
     Checks
     ------
     1. Required columns present.
-    2. No null ``daily_views`` — nulls cannot be fitted by pmdarima.
-    3. No duplicate ``(report_id, date)`` pairs — duplicates would silently
-       distort rolling aggregates and ARIMA fits.
-    4. Each per-report sub-series is sorted by date.
-    5. Each per-report sub-series is contiguous (no calendar-day gaps).
+    2. No null ``daily_views``.
+    3. No duplicate ``(report_id, date)`` pairs.
+    4. Per-report dates are sorted.
+    5. Per-report dates are contiguous (no calendar-day gaps).
+    6. ``daily_views`` is non-negative.
+    7. ``daily_views`` is integer-valued.
 
     Parameters
     ----------
@@ -156,7 +158,8 @@ def validate_forecasting_series_input(df: pd.DataFrame) -> None:
     Raises
     ------
     ValueError
-        On null ``daily_views`` or duplicate ``(report_id, date)`` pairs.
+        On any structural or value violation.  Gap errors identify the
+        report_id, the missing date, and the two neighbouring dates.
     """
     missing = [c for c in [STANDARD_DATE_COL, STANDARD_REPORT_ID_COL, STANDARD_TARGET_COL]
                if c not in df.columns]
@@ -181,26 +184,47 @@ def validate_forecasting_series_input(df: pd.DataFrame) -> None:
             "Aggregate or deduplicate before fitting."
         )
 
-    unsorted_reports = []
-    gapped_reports = []
     for rid, grp in df.groupby(STANDARD_REPORT_ID_COL, sort=False):
-        dates = grp[STANDARD_DATE_COL].sort_values()
-        if not (grp[STANDARD_DATE_COL].values == dates.values).all():
-            unsorted_reports.append(rid)
-        gaps = dates.diff().dropna()
-        if not gaps.empty and gaps.ne(pd.Timedelta("1D")).any():
-            gapped_reports.append(rid)
+        dates = grp[STANDARD_DATE_COL].reset_index(drop=True)
 
-    if unsorted_reports:
-        print(
-            f"WARNING: {len(unsorted_reports)} report(s) have unsorted dates — "
-            f"they will be sorted before fitting: {unsorted_reports[:5]}"
-        )
-    if gapped_reports:
-        print(
-            f"WARNING: {len(gapped_reports)} report(s) have date gaps in their series — "
-            f"gaps will be filled with zero before fitting: {gapped_reports[:5]}"
-        )
+        # Check 4 — sorted
+        if not dates.is_monotonic_increasing:
+            raise ValueError(
+                f"Report {rid!r}: dates are not sorted in ascending order. "
+                "Sort the series before passing it to the forecasting pipeline."
+            )
+
+        # Check 5 — contiguous (evaluated on already-sorted dates)
+        diffs = dates.diff().dropna()
+        bad = diffs[diffs != pd.Timedelta("1D")]
+        if not bad.empty:
+            gap_pos = bad.index[0]
+            before = dates.iloc[gap_pos - 1]
+            after = dates.iloc[gap_pos]
+            expected = before + pd.Timedelta("1D")
+            raise ValueError(
+                f"Report {rid!r} has a missing date: expected {expected:%Y-%m-%d} "
+                f"but the series jumps from {before:%Y-%m-%d} to {after:%Y-%m-%d}. "
+                "Re-run the feature-engineering step (build_report_daily_series) to "
+                "produce a complete daily series — the forecasting layer does not fill gaps."
+            )
+
+        # Check 6 — non-negative
+        neg_count = int((grp[STANDARD_TARGET_COL] < 0).sum())
+        if neg_count:
+            raise ValueError(
+                f"Report {rid!r}: {neg_count} row(s) have negative {STANDARD_TARGET_COL}."
+            )
+
+        # Check 7 — integer-valued
+        if not pd.api.types.is_integer_dtype(grp[STANDARD_TARGET_COL]):
+            non_whole = grp[STANDARD_TARGET_COL].dropna()
+            non_whole = non_whole[non_whole != non_whole.round()]
+            if not non_whole.empty:
+                raise ValueError(
+                    f"Report {rid!r}: {STANDARD_TARGET_COL} contains "
+                    f"{len(non_whole)} non-integer value(s)."
+                )
 
 
 def standardise_forecasting_columns(
@@ -424,26 +448,30 @@ def run_data_quality_checks(df: pd.DataFrame) -> pd.DataFrame:
 def build_daily_series_for_all_reports(
     df: pd.DataFrame,
 ) -> tuple[dict[str, pd.Series], dict[str, str], dict[str, dict]]:
-    """Build gap-filled daily report usage series and record per-report provenance.
+    """Convert the validated internal-schema frame into per-report Series objects.
 
-    When the input is ``mart_report_daily_series`` (already contiguous and
-    zero-filled), the ``reindex`` step is a no-op.  For legacy fallback inputs
-    that may have date gaps, zeros are filled so pmdarima receives a contiguous
-    series.
+    ``mart_report_daily_series`` is treated as authoritative.  The input must
+    already be continuous (validated by ``validate_forecasting_series_input``
+    upstream).  This function **does not** fill gaps, manufacture rows, or
+    reindex to a synthetic date range — the series it receives is the series
+    pmdarima fits.
 
-    Zero-view days are always preserved.  Sparse reports (high zero share) are
-    gated out by ``filter_by_data_criteria``, not by dropping zeros here.
+    Zero-view days that exist in the source are preserved exactly as-is.
+    Sparse reports (high zero share) are gated out by ``filter_by_data_criteria``,
+    not by dropping zeros here.
 
     Parameters
     ----------
     df:
         Internal-schema DataFrame with columns ``Date``, ``Report Guid``,
         ``Report Name``, ``Occurrences`` (output of ``adapt_to_forecasting_schema``).
+        Must have already passed ``validate_forecasting_series_input``.
 
     Returns
     -------
     series_dict : dict[str, pd.Series]
-        Per-report daily view series, date-indexed, zero-filled.
+        Per-report daily view series, date-indexed.  Exactly the rows present
+        in the source — no synthetic rows added.
     name_lookup : dict[str, str]
         report_id → report_name mapping.
     provenance : dict[str, dict]
@@ -460,15 +488,15 @@ def build_daily_series_for_all_reports(
     for rid, group in d.groupby(REPORT_ID_COL):
         rid_str = str(rid)
         name_lookup[rid_str] = str(group[REPORT_NAME_COL].iloc[0])
+        # Aggregate to one row per date (no-op for canonical input; handles any
+        # residual duplicates that slipped through adapt_to_forecasting_schema).
         daily = group.groupby(DATE_COL)[VIEWS_COL].sum().rename("Views").sort_index()
-        full_index = pd.date_range(daily.index.min(), daily.index.max(), freq="D")
-        daily_full = daily.reindex(full_index, fill_value=0)
-        daily_full.index.name = DATE_COL
-        series_dict[rid_str] = daily_full
+        daily.index.name = DATE_COL
+        series_dict[rid_str] = daily
         provenance[rid_str] = {
-            "date_min": str(daily_full.index.min().date()),
-            "date_max": str(daily_full.index.max().date()),
-            "n_obs": int(len(daily_full)),
+            "date_min": str(daily.index.min().date()),
+            "date_max": str(daily.index.max().date()),
+            "n_obs": int(len(daily)),
         }
 
     return series_dict, name_lookup, provenance
