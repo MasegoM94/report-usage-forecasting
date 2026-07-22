@@ -1247,5 +1247,288 @@ def run_pipeline(horizon: int = FORECAST_HORIZON_DAYS) -> dict[str, object]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Stage helpers for the new production pipeline
+# ---------------------------------------------------------------------------
+
+def run_backtest_stage(
+    eligible_series: dict[str, pd.Series],
+    model_registry: Optional[dict],
+    backtest_config=None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Run rolling backtest evaluation for all eligible reports.
+
+    This is Stage 1 + 2 + 3 of the production pipeline:
+    backtest → fold metrics → model summary → model selection.
+
+    Parameters
+    ----------
+    eligible_series:
+        Per-report daily series that have passed data-sufficiency checks.
+    model_registry:
+        Mapping of model_name → callable.  When ``None``, the full five-
+        model registry from ``candidates.py`` is used.
+    backtest_config:
+        ``BacktestConfig`` instance; defaults to the central config values.
+
+    Returns
+    -------
+    predictions : pd.DataFrame
+        Row-per-(report, fold, model, forecast_date) backtest predictions.
+    fold_metrics : pd.DataFrame
+        Row-per-(report, fold, model) fold-level evaluation metrics.
+    model_summary : pd.DataFrame
+        Row-per-(report, model) cross-fold summary.
+    selection : pd.DataFrame
+        Row-per-report model selection decisions.
+    """
+    from src.models.backtest_evaluation import BacktestConfig, evaluate_models_across_folds
+    from src.models.candidates import (
+        forecast_auto_arima,
+        forecast_ets,
+        forecast_moving_average,
+        forecast_naive,
+        forecast_seasonal_naive,
+    )
+    from src.models.model_summary import summarise_model_performance
+    from src.models.selection import select_models
+
+    if model_registry is None:
+        model_registry = {
+            "naive": forecast_naive,
+            "seasonal_naive": forecast_seasonal_naive,
+            "moving_average": forecast_moving_average,
+            "ets": forecast_ets,
+            "auto_arima": forecast_auto_arima,
+        }
+
+    if backtest_config is None:
+        backtest_config = BacktestConfig()
+
+    all_predictions: list[pd.DataFrame] = []
+    all_fold_metrics: list[pd.DataFrame] = []
+
+    for rid, series in eligible_series.items():
+        try:
+            preds, fmetrics = evaluate_models_across_folds(
+                rid, series, model_registry, backtest_config
+            )
+            all_predictions.append(preds)
+            all_fold_metrics.append(fmetrics)
+        except Exception:
+            pass
+
+    if not all_fold_metrics:
+        empty_preds = pd.DataFrame()
+        empty_fm = pd.DataFrame()
+        empty_summary = pd.DataFrame()
+        empty_sel = pd.DataFrame()
+        return empty_preds, empty_fm, empty_summary, empty_sel
+
+    predictions = pd.concat(all_predictions, ignore_index=True)
+    fold_metrics = pd.concat(all_fold_metrics, ignore_index=True)
+    model_summary = summarise_model_performance(fold_metrics)
+    selection = select_models(model_summary)
+
+    return predictions, fold_metrics, model_summary, selection
+
+
+def save_production_outputs(
+    production_df: pd.DataFrame,
+    model_summary: pd.DataFrame,
+    selection: pd.DataFrame,
+    project_root: Path,
+    run_id: str,
+    generated_at: pd.Timestamp,
+) -> dict[str, Optional[Path]]:
+    """Save production forecast, model summary, and selection files.
+
+    Production forecast rows are written to ``latest`` (overwrite) and
+    appended to ``production_forecasts_history.csv`` (never overwritten).
+    The history file accumulates every run's forecasts in append mode so
+    that past production forecasts are never lost (requirement 5).
+
+    Parameters
+    ----------
+    production_df:
+        Output of ``build_production_forecast``.
+    model_summary:
+        Cross-fold model summary from ``summarise_model_performance``.
+    selection:
+        Per-report model selection from ``select_models``.
+    project_root:
+        Repository root; outputs are written under ``outputs/``.
+    run_id:
+        Stamped into the history file for each batch of rows.
+    generated_at:
+        Forecast generation timestamp.
+
+    Returns
+    -------
+    dict mapping logical name → ``Path`` (or ``None`` when nothing saved).
+    """
+    forecast_dir = project_root / "outputs" / "forecasts"
+    metrics_dir = project_root / "outputs" / "metrics"
+    forecast_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    paths: dict[str, Optional[Path]] = {}
+
+    # Latest production forecast (overwrite — always reflects the current run)
+    latest_fc_path = forecast_dir / "production_forecasts_latest.csv"
+    production_df.to_csv(latest_fc_path, index=False)
+    paths["production_latest"] = latest_fc_path
+
+    # History (append-only — past runs are never overwritten)
+    history_path = forecast_dir / "production_forecasts_history.csv"
+    write_header = not history_path.exists()
+    if not production_df.empty:
+        production_df.to_csv(history_path, mode="a", index=False, header=write_header)
+        paths["production_history"] = history_path
+    else:
+        paths["production_history"] = None
+
+    # Model summary
+    if not model_summary.empty:
+        summary_path = metrics_dir / "evaluation_model_summary_latest.csv"
+        model_summary.to_csv(summary_path, index=False)
+        paths["model_summary"] = summary_path
+    else:
+        paths["model_summary"] = None
+
+    # Selection decisions
+    if not selection.empty:
+        sel_path = metrics_dir / "model_selection_latest.csv"
+        selection.to_csv(sel_path, index=False)
+        paths["model_selection"] = sel_path
+    else:
+        paths["model_selection"] = None
+
+    return paths
+
+
+def run_production_pipeline(
+    horizon: int = FORECAST_HORIZON_DAYS,
+    model_registry: Optional[dict] = None,
+    backtest_config=None,
+) -> dict[str, object]:
+    """Run the explicit six-step production forecasting lifecycle.
+
+    The evaluation and future forecasting phases are kept strictly separate:
+
+    1. Generate rolling backtest results
+       ``evaluate_models_across_folds`` fits candidates on expanding windows;
+       no evaluation state survives this step.
+
+    2. Summarize model performance
+       ``summarise_model_performance`` aggregates fold-level metrics per
+       (report, model).
+
+    3. Select one model per report
+       ``select_models`` applies the policy from ``selection.py``.
+
+    4. Refit the selected model on complete available history
+       ``refit_and_forecast`` fits a *fresh* model on all observations.
+       ``model.update`` is never called on an evaluation model.
+
+    5. Generate the next *horizon*-day production forecast
+       The forecast index starts the day after the final observed date.
+       No backtest evaluation rows are mixed into the output.
+
+    6. Save forecast metadata and selection lineage
+       ``save_production_outputs`` writes latest files (overwrite) and
+       appends to history (never overwrite prior runs).
+
+    Parameters
+    ----------
+    horizon:
+        Number of future days to forecast.  Defaults to
+        ``FORECAST_HORIZON_DAYS`` (28).
+    model_registry:
+        Override the default five-model registry.  Useful for tests.
+    backtest_config:
+        Override the default ``BacktestConfig``.  Useful for tests.
+
+    Returns
+    -------
+    dict
+        Keys: ``run_id``, ``input_path``, ``production_forecast``,
+        ``model_summary``, ``selection``, ``data_diagnostics``,
+        ``output_paths``.
+    """
+    from src.models.production_forecast import build_production_forecast
+
+    project_root = get_project_root()
+    generated_at = pd.Timestamp.now()
+    run_id = generated_at.strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+
+    # Load and validate canonical input
+    daily_series, model_input, input_path = load_forecast_feature_input(project_root)
+    dq_table = run_data_quality_checks(daily_series)
+
+    # Build per-report series objects and gate by data sufficiency
+    series_dict, name_lookup, provenance = build_daily_series_for_all_reports(model_input)
+    passing_ids, data_diag = filter_by_data_criteria(series_dict, provenance)
+    eligible_series = {rid: series_dict[rid] for rid in passing_ids}
+
+    # Steps 1–3: Backtest → summarize → select
+    predictions, fold_metrics, model_summary, selection = run_backtest_stage(
+        eligible_series,
+        model_registry=model_registry,
+        backtest_config=backtest_config,
+    )
+
+    # Steps 4–5: Refit on full history → generate production forecasts
+    production_df = build_production_forecast(
+        selection=selection,
+        series_dict=eligible_series,
+        run_id=run_id,
+        generated_at=generated_at,
+        horizon=horizon,
+        selection_run_id=run_id,
+    )
+
+    # Step 6: Save with lineage
+    output_paths = save_production_outputs(
+        production_df=production_df,
+        model_summary=model_summary,
+        selection=selection,
+        project_root=project_root,
+        run_id=run_id,
+        generated_at=generated_at,
+    )
+
+    # Also run legacy history + realized-error updates for backward compatibility
+    realized_errors = update_realized_errors(model_input, project_root)
+
+    n_selected = int(selection["selection_status"].eq("selected").sum()) if not selection.empty else 0
+    n_eligible = len(passing_ids)
+    n_reports_total = len(data_diag)
+
+    print(f"RUN_ID: {run_id}")
+    print(f"Input: {input_path.relative_to(project_root)}")
+    print(f"Reports: {n_eligible}/{n_reports_total} passed data criteria")
+    print(f"Models selected: {n_selected}/{n_eligible} eligible reports")
+    print(f"Production forecast rows: {len(production_df[production_df['horizon_step'].notna()])}")
+    for name, path in output_paths.items():
+        if path:
+            print(f"Saved [{name}]: {path.relative_to(project_root)}")
+    if not realized_errors.empty:
+        print(f"Realized error rows added: {len(realized_errors)}")
+
+    return {
+        "run_id": run_id,
+        "input_path": input_path,
+        "production_forecast": production_df,
+        "predictions": predictions,
+        "fold_metrics": fold_metrics,
+        "model_summary": model_summary,
+        "selection": selection,
+        "data_diagnostics": data_diag,
+        "data_quality": dq_table,
+        "output_paths": output_paths,
+    }
+
+
 if __name__ == "__main__":
     run_pipeline()
