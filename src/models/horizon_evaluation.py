@@ -42,7 +42,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_PERIOD
+from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_CANDIDATES
 from src.models.metrics import calculate_interval_metrics, calculate_point_metrics
 
 
@@ -193,7 +193,7 @@ def _bucket_metrics_row(
 def calculate_horizon_bucket_metrics(
     predictions: pd.DataFrame,
     series_lookup: dict[str, pd.Series],
-    seasonal_period: int = SEASONAL_PERIOD,
+    seasonal_period: int = SEASONAL_CANDIDATES[0],
     buckets: Optional[list[tuple[str, int, int]]] = None,
 ) -> pd.DataFrame:
     """Compute per-bucket metrics from prediction-level backtest results.

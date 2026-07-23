@@ -44,7 +44,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_PERIOD
+from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_CANDIDATES
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ def forecast_naive(
 def forecast_seasonal_naive(
     training_series: pd.Series,
     horizon: int = FORECAST_HORIZON_DAYS,
-    seasonal_period: int = SEASONAL_PERIOD,
+    seasonal_period: int = SEASONAL_CANDIDATES[0],
 ) -> ModelResult:
     """Forecast by repeating the most recent full seasonal cycle.
 
@@ -239,7 +239,7 @@ def forecast_seasonal_naive(
 def forecast_moving_average(
     training_series: pd.Series,
     horizon: int = FORECAST_HORIZON_DAYS,
-    window: int = SEASONAL_PERIOD,
+    window: int = SEASONAL_CANDIDATES[0],
 ) -> ModelResult:
     """Forecast every future day as the mean of the last *window* observations.
 
@@ -287,7 +287,7 @@ def forecast_moving_average(
 def forecast_ets(
     training_series: pd.Series,
     horizon: int = FORECAST_HORIZON_DAYS,
-    seasonal_period: int = SEASONAL_PERIOD,
+    seasonal_period: int = SEASONAL_CANDIDATES[0],
     alpha: float = 0.05,
 ) -> ModelResult:
     """Fit a Holt-Winters ETS model and forecast *horizon* days ahead.
@@ -379,7 +379,7 @@ def forecast_ets(
 def forecast_auto_arima(
     training_series: pd.Series,
     horizon: int = FORECAST_HORIZON_DAYS,
-    seasonal_period: int = SEASONAL_PERIOD,
+    seasonal_period: int = SEASONAL_CANDIDATES[0],
     alpha: float = 0.05,
 ) -> ModelResult:
     """Fit an Auto-ARIMA (SARIMA) model and forecast *horizon* days ahead.

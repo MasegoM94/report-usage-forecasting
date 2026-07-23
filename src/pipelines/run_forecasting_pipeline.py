@@ -17,7 +17,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_PERIOD
+from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_CANDIDATES
 from src.models.metrics import calculate_point_metrics
 
 
@@ -578,12 +578,20 @@ def naive_forecast_last_value(y_train: pd.Series, steps: int) -> np.ndarray:
 
 
 def seasonal_naive_forecast(y_train: pd.Series, steps: int) -> np.ndarray:
-    """Forecast future values by repeating the latest weekly pattern."""
-    if len(y_train) < SEASONAL_PERIOD:
+    """Forecast future values by repeating the latest weekly (m=7) pattern.
+
+    This is a legacy helper used only by the old ``train_and_evaluate_arima``
+    single-split pipeline.  It hard-codes m=7 (``SEASONAL_CANDIDATES[0]``)
+    because the old pipeline did not support per-report seasonal periods.
+    New code should call ``forecast_seasonal_naive`` from ``candidates.py``
+    and pass ``seasonal_period`` explicitly.
+    """
+    _m = SEASONAL_CANDIDATES[0]  # 7 — weekly; legacy pipeline assumption
+    if len(y_train) < _m:
         return naive_forecast_last_value(y_train, steps)
 
-    last_season = y_train.iloc[-SEASONAL_PERIOD:].to_numpy(dtype=float)
-    repeats = int(np.ceil(steps / SEASONAL_PERIOD))
+    last_season = y_train.iloc[-_m:].to_numpy(dtype=float)
+    repeats = int(np.ceil(steps / _m))
     return np.tile(last_season, repeats)[:steps]
 
 
@@ -705,7 +713,7 @@ def train_and_evaluate_arima(
     model = auto_arima(
         y_train,
         seasonal=True,
-        m=SEASONAL_PERIOD,
+        m=SEASONAL_CANDIDATES[0],  # 7 — weekly; legacy pipeline assumption
         stepwise=True,
         suppress_warnings=True,
         error_action="ignore",

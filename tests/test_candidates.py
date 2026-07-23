@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_PERIOD
+from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_CANDIDATES
 from src.models.candidates import (
     ModelResult,
     forecast_auto_arima,
@@ -70,7 +70,8 @@ def _daily_series(n: int, start: str = "2022-01-01", seed: int = 0) -> pd.Series
 _TRAIN = _daily_series(365)
 
 # Minimal series: exactly min needed for one ETS seasonal fit + horizon
-_SHORT = _daily_series(2 * SEASONAL_PERIOD + HORIZON + 1)
+# Uses the shortest candidate (weekly, m=7) as the reference period.
+_SHORT = _daily_series(2 * SEASONAL_CANDIDATES[0] + HORIZON + 1)
 
 # All model functions collected for parametric tests.
 # Statistical models carry skip marks so tests are skipped (not failed) when
@@ -171,8 +172,9 @@ class TestMetadata:
         assert result.model_metadata["last_observed"] == float(_TRAIN.iloc[-1])
 
     def test_seasonal_naive_metadata_has_seasonal_period(self):
+        # Default seasonal_period is SEASONAL_CANDIDATES[0] (7 — weekly).
         result = forecast_seasonal_naive(_TRAIN, horizon=HORIZON)
-        assert result.model_metadata.get("seasonal_period") == SEASONAL_PERIOD
+        assert result.model_metadata.get("seasonal_period") == SEASONAL_CANDIDATES[0]
 
     def test_seasonal_naive_metadata_has_fallback_flag(self):
         result = forecast_seasonal_naive(_TRAIN, horizon=HORIZON)
@@ -228,9 +230,10 @@ class TestMetadata:
 
     @_skip_no_pmdarima
     def test_auto_arima_metadata_has_seasonal_period(self):
+        # Default seasonal_period is SEASONAL_CANDIDATES[0] (7 — weekly).
         result = forecast_auto_arima(_TRAIN, horizon=HORIZON)
         _require_fit_success(result)
-        assert result.model_metadata.get("seasonal_period") == SEASONAL_PERIOD
+        assert result.model_metadata.get("seasonal_period") == SEASONAL_CANDIDATES[0]
 
     @_skip_no_pmdarima
     def test_auto_arima_metadata_has_aic_and_aicc(self):

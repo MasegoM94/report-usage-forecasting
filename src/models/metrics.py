@@ -32,7 +32,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.config.forecasting import SEASONAL_PERIOD as _DEFAULT_SEASONAL_PERIOD
+from src.config.forecasting import SEASONAL_CANDIDATES as _SEASONAL_CANDIDATES
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ def calculate_point_metrics(
     actual: "np.ndarray | pd.Series | list",
     forecast: "np.ndarray | pd.Series | list",
     training_series: "np.ndarray | pd.Series | list | None" = None,
-    seasonal_period: int = _DEFAULT_SEASONAL_PERIOD,
+    seasonal_period: int = _SEASONAL_CANDIDATES[0],
 ) -> dict[str, float]:
     """Compute MAE, RMSE, WAPE, MASE, and bias for a single evaluation window.
 

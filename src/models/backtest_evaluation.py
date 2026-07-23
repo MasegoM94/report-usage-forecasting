@@ -39,7 +39,7 @@ from src.config.forecasting import (
     BACKTEST_STEP_DAYS,
     FORECAST_HORIZON_DAYS,
     MIN_TRAIN_DAYS,
-    SEASONAL_PERIOD,
+    SEASONAL_CANDIDATES,
 )
 from src.models.backtesting import ForecastFold, generate_rolling_splits
 from src.models.candidates import ModelResult
@@ -74,7 +74,7 @@ class BacktestConfig:
     n_folds: int = BACKTEST_FOLDS
     step: int = BACKTEST_STEP_DAYS
     min_train_size: int = MIN_TRAIN_DAYS
-    seasonal_period: int = SEASONAL_PERIOD
+    seasonal_period: int = SEASONAL_CANDIDATES[0]
 
 
 # ---------------------------------------------------------------------------
