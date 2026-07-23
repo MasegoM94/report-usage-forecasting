@@ -1417,6 +1417,9 @@ def save_production_outputs(
     project_root: Path,
     run_id: str,
     generated_at: pd.Timestamp,
+    series_dict: Optional[dict] = None,
+    fold_metrics: Optional[pd.DataFrame] = None,
+    candidate_summary: Optional[pd.DataFrame] = None,
 ) -> dict[str, Optional[Path]]:
     """Save production forecast, model summary, and selection files.
 
@@ -1439,6 +1442,15 @@ def save_production_outputs(
         Stamped into the history file for each batch of rows.
     generated_at:
         Forecast generation timestamp.
+    series_dict:
+        Optional per-report daily series dict; when supplied, seasonality
+        diagnostic outputs are generated and saved alongside forecasts.
+    fold_metrics:
+        Optional fold-level metrics (output of ``evaluate_candidates_across_folds``);
+        required for seasonality diagnostics.
+    candidate_summary:
+        Optional candidate summary (output of ``summarise_candidate_performance``);
+        used for baseline improvement computations in diagnostics.
 
     Returns
     -------
@@ -1480,6 +1492,33 @@ def save_production_outputs(
         paths["model_selection"] = sel_path
     else:
         paths["model_selection"] = None
+
+    # Seasonality diagnostic outputs
+    if series_dict and fold_metrics is not None and not fold_metrics.empty:
+        try:
+            from src.models.seasonality_diagnostics import (
+                build_seasonality_candidates,
+                build_seasonality_summary,
+                save_seasonality_diagnostics,
+            )
+            cs = candidate_summary if candidate_summary is not None else pd.DataFrame()
+            diag_summary = build_seasonality_summary(
+                series_dict=series_dict,
+                selection=selection if not selection.empty else pd.DataFrame(),
+                fold_metrics=fold_metrics,
+                production_df=production_df,
+                candidate_summary=cs,
+            )
+            diag_candidates = build_seasonality_candidates(fold_metrics)
+            diag_paths = save_seasonality_diagnostics(diag_summary, diag_candidates, project_root)
+            paths["seasonality_summary"] = diag_paths["summary"]
+            paths["seasonality_candidates"] = diag_paths["candidates"]
+        except Exception:
+            paths["seasonality_summary"] = None
+            paths["seasonality_candidates"] = None
+    else:
+        paths["seasonality_summary"] = None
+        paths["seasonality_candidates"] = None
 
     return paths
 
@@ -1570,7 +1609,7 @@ def run_production_pipeline(
         candidate_summary=model_summary,
     )
 
-    # Step 6: Save with lineage
+    # Step 6: Save with lineage + seasonality diagnostics
     output_paths = save_production_outputs(
         production_df=production_df,
         model_summary=model_summary,
@@ -1578,6 +1617,9 @@ def run_production_pipeline(
         project_root=project_root,
         run_id=run_id,
         generated_at=generated_at,
+        series_dict=eligible_series,
+        fold_metrics=fold_metrics,
+        candidate_summary=model_summary,
     )
 
     # Also run legacy history + realized-error updates for backward compatibility
