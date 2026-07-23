@@ -56,7 +56,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.config.forecasting import MIN_VALID_FOLDS
+from src.config.forecasting import MIN_VALID_FOLDS, NON_SEASONAL_PERIOD
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -389,4 +389,360 @@ def select_models(
         )
 
     result = pd.DataFrame(rows)[_OUTPUT_COLS]
+    return result.sort_values("report_id", ignore_index=True)
+
+
+# ===========================================================================
+# Joint model-family + seasonal-period candidate selection
+# ===========================================================================
+
+# Required columns from summarise_candidate_performance
+_CANDIDATE_REQUIRED_INPUT_COLS = {
+    "report_id", "model_family", "model_name", "candidate_m",
+    "has_sufficient_folds", "valid_folds", "failed_folds",
+    "median_mase", "mean_mase", "mean_wape", "mean_mae",
+    "mean_bias", "absolute_mean_bias",
+    "fold_win_count", "fold_win_rate",
+}
+
+_CANDIDATE_OUTPUT_COLS = [
+    "report_id",
+    "selected_model_family",
+    "selected_model_name",
+    "selected_m",
+    "selection_status",
+    "selection_reason",
+    "valid_folds",
+    "median_mase",
+    "mean_wape",
+    "mean_bias",
+    "fold_win_rate",
+    "seasonal_naive_median_mase",
+    "improvement_vs_seasonal_naive_pct",
+]
+
+
+def _display_name(model_family: str, candidate_m: int) -> str:
+    """Human-readable label for a (model_family, candidate_m) candidate."""
+    if model_family == "naive":
+        return "Naive"
+    if model_family == "moving_average":
+        return "Moving Average"
+    if model_family == "seasonal_naive":
+        return "Naive" if candidate_m == NON_SEASONAL_PERIOD else f"Seasonal-naive m={candidate_m}"
+    if model_family == "auto_arima":
+        return "ARIMA m=1" if candidate_m == NON_SEASONAL_PERIOD else f"SARIMA m={candidate_m}"
+    if model_family == "ets":
+        return "ETS (non-seasonal)" if candidate_m == NON_SEASONAL_PERIOD else f"Seasonal ETS m={candidate_m}"
+    return f"{model_family} m={candidate_m}"
+
+
+def _family_complexity(family: str) -> int:
+    return MODEL_COMPLEXITY.get(family, 99)
+
+
+def _no_candidate_row(
+    report_id: str,
+    reason: str,
+    sn_mase: float = np.nan,
+) -> dict:
+    return {
+        "report_id": report_id,
+        "selected_model_family": None,
+        "selected_model_name": None,
+        "selected_m": None,
+        "selection_status": "no_reliable_model",
+        "selection_reason": reason,
+        "valid_folds": np.nan,
+        "median_mase": np.nan,
+        "mean_wape": np.nan,
+        "mean_bias": np.nan,
+        "fold_win_rate": np.nan,
+        "seasonal_naive_median_mase": sn_mase,
+        "improvement_vs_seasonal_naive_pct": np.nan,
+    }
+
+
+def _candidate_selected_row(
+    report_id: str,
+    selected: pd.Series,
+    reason: str,
+    sn_mase: float,
+) -> dict:
+    candidate_mase = float(selected["median_mase"])
+    return {
+        "report_id": report_id,
+        "selected_model_family": selected["model_family"],
+        "selected_model_name": selected["model_name"],
+        "selected_m": int(selected["candidate_m"]),
+        "selection_status": "selected",
+        "selection_reason": reason,
+        "valid_folds": int(selected["valid_folds"]),
+        "median_mase": candidate_mase,
+        "mean_wape": selected.get("mean_wape", np.nan),
+        "mean_bias": selected.get("mean_bias", np.nan),
+        "fold_win_rate": selected.get("fold_win_rate", np.nan),
+        "seasonal_naive_median_mase": sn_mase,
+        "improvement_vs_seasonal_naive_pct": _improvement_pct(sn_mase, candidate_mase),
+    }
+
+
+def _select_candidates_for_report(
+    report_df: pd.DataFrame,
+    min_valid_folds: int,
+    rel_tol: float,
+    max_bias_ratio: Optional[float],
+) -> dict:
+    """Run the joint model-family + seasonal-period selection for one report_id."""
+    report_id: str = report_df["report_id"].iloc[0]
+
+    # --- Seasonal naive MASE per m (always extracted, pre-guardrail) ---
+    sn_by_m: dict[int, float] = {}
+    for _, sn_row in report_df[report_df["model_family"] == "seasonal_naive"].iterrows():
+        m = int(sn_row["candidate_m"])
+        mase = sn_row.get("median_mase", np.nan)
+        if pd.notna(mase):
+            sn_by_m[m] = float(mase)
+
+    # --- Best non-seasonal baseline (candidate_m == NON_SEASONAL_PERIOD) ---
+    ns_rows = report_df[report_df["candidate_m"] == NON_SEASONAL_PERIOD]
+    ns_valid = ns_rows.dropna(subset=["median_mase"])
+    best_ns_mase: float = float(ns_valid["median_mase"].min()) if not ns_valid.empty else np.nan
+
+    # --- 1. Require sufficient valid folds ---
+    eligible = report_df[report_df["has_sufficient_folds"]].copy()
+
+    if eligible.empty:
+        max_valid = int(report_df["valid_folds"].max()) if not report_df.empty else 0
+        # Collect candidates that specifically failed the fold-count gate
+        short_notes = [
+            f"{_display_name(r['model_family'], int(r['candidate_m']))} "
+            f"({int(r['valid_folds'])} valid fold{'s' if r['valid_folds'] != 1 else ''})"
+            for _, r in report_df.iterrows()
+        ]
+        note = "; ".join(short_notes[:3])
+        if len(short_notes) > 3:
+            note += f" and {len(short_notes) - 3} more"
+        return _no_candidate_row(
+            report_id,
+            f"No reliable model: fewer than {min_valid_folds} valid folds "
+            f"(best was {max_valid}). Candidates: {note}.",
+            sn_mase=np.nan,
+        )
+
+    # --- 2. Bias guardrail ---
+    bias_excluded: list[str] = []
+    if max_bias_ratio is not None and "absolute_mean_bias" in eligible.columns:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = eligible["absolute_mean_bias"] / eligible["mean_mae"]
+        passes = ratio.fillna(0.0) <= max_bias_ratio
+        bias_excluded = [
+            _display_name(r["model_family"], int(r["candidate_m"]))
+            for _, r in eligible[~passes].iterrows()
+        ]
+        eligible = eligible[passes].copy()
+
+    if eligible.empty:
+        excluded_str = ", ".join(bias_excluded)
+        return _no_candidate_row(
+            report_id,
+            f"No reliable model: all candidates excluded by bias guardrail "
+            f"(|bias|/MAE > {max_bias_ratio}) — {excluded_str}.",
+            sn_mase=np.nan,
+        )
+
+    # --- 3. Require finite median_mase ---
+    eligible = eligible.dropna(subset=["median_mase"]).copy()
+
+    if eligible.empty:
+        return _no_candidate_row(
+            report_id,
+            "No reliable model: no eligible candidate produced a valid median MASE.",
+            sn_mase=np.nan,
+        )
+
+    # --- 4. Rank by median_mase ---
+    eligible = eligible.sort_values("median_mase", ignore_index=True)
+    best_mase: float = float(eligible["median_mase"].iloc[0])
+    absolute_best = eligible.iloc[0]
+
+    # --- 5. Practical tie group ---
+    tie_threshold = best_mase * (1.0 + rel_tol)
+    tie_group = eligible[eligible["median_mase"] <= tie_threshold].copy()
+
+    # --- 6. Within tie group: prefer simpler family, then shorter m ---
+    tie_group["_cplx"] = tie_group["model_family"].map(_family_complexity)
+    tie_group = tie_group.sort_values(
+        ["_cplx", "candidate_m", "median_mase"], ignore_index=True
+    )
+    selected: pd.Series = tie_group.iloc[0]
+    selected_family: str = selected["model_family"]
+    selected_m: int = int(selected["candidate_m"])
+    selected_mase: float = float(selected["median_mase"])
+
+    tie_triggered = (
+        selected["model_name"] != absolute_best["model_name"]
+    )
+
+    # --- Benchmark lookup for the selected (family, m) ---
+    sn_mase: float = sn_by_m.get(selected_m, np.nan)
+
+    # --- 7. Build reason ---
+    bias_note = (
+        f" ({len(bias_excluded)} candidate(s) excluded by bias guardrail)"
+        if bias_excluded else ""
+    )
+
+    selected_display = _display_name(selected_family, selected_m)
+    best_display = _display_name(absolute_best["model_family"], int(absolute_best["candidate_m"]))
+
+    if tie_triggered:
+        improvement = _improvement_pct(selected_mase, best_mase)
+        tol_pct = rel_tol * 100.0
+        reason = (
+            f"{selected_display} retained: {best_display} improvement "
+            f"({improvement:.1f}%) was below the {tol_pct:.1f}% tolerance"
+            f"{bias_note}."
+        )
+    elif selected_m == NON_SEASONAL_PERIOD:
+        # Non-seasonal winner
+        seasonal_eligible = eligible[eligible["candidate_m"] > NON_SEASONAL_PERIOD]
+        if not seasonal_eligible.empty:
+            best_seasonal_mase = float(seasonal_eligible["median_mase"].iloc[0])
+            best_seasonal_display = _display_name(
+                seasonal_eligible.iloc[0]["model_family"],
+                int(seasonal_eligible.iloc[0]["candidate_m"]),
+            )
+            reason = (
+                f"{selected_display} selected: seasonal candidates did not improve "
+                f"rolling forecast accuracy "
+                f"(best seasonal {best_seasonal_display} MASE {best_seasonal_mase:.3f} "
+                f"vs {selected_display} {selected_mase:.3f}){bias_note}."
+            )
+        else:
+            reason = (
+                f"{selected_display} selected: lowest median MASE ({selected_mase:.3f})"
+                f" — no seasonal candidates were eligible{bias_note}."
+            )
+    elif selected_family == "seasonal_naive":
+        wins = int(selected.get("fold_win_count", 0))
+        valid = int(selected.get("valid_folds", 0))
+        wins_clause = f" and won {wins} of {valid} folds" if valid > 0 else ""
+        reason = (
+            f"{selected_display} selected: lowest median MASE ({selected_mase:.3f})"
+            f"{wins_clause}{bias_note}."
+        )
+    else:
+        # Complex seasonal model
+        if pd.notna(sn_mase):
+            pct = _improvement_pct(sn_mase, selected_mase)
+            wins = int(selected.get("fold_win_count", 0))
+            valid = int(selected.get("valid_folds", 0))
+            wins_clause = (
+                f" and beat seasonal-naive m={selected_m} in {wins} of {valid} folds"
+                if valid > 0 else ""
+            )
+            reason = (
+                f"{selected_display} selected: lowest median MASE ({selected_mase:.3f})"
+                f", improved over seasonal-naive m={selected_m} by {pct:.1f}%"
+                f"{wins_clause}{bias_note}."
+            )
+        elif pd.notna(best_ns_mase):
+            pct = _improvement_pct(best_ns_mase, selected_mase)
+            reason = (
+                f"{selected_display} selected: lowest median MASE ({selected_mase:.3f})"
+                f", improved over non-seasonal baseline by {pct:.1f}%{bias_note}."
+            )
+        else:
+            reason = (
+                f"{selected_display} selected: lowest median MASE ({selected_mase:.3f})"
+                f"{bias_note}."
+            )
+
+    return _candidate_selected_row(report_id, selected, reason, sn_mase)
+
+
+def select_candidate_models(
+    candidate_summary: pd.DataFrame,
+    min_valid_folds: int = MIN_VALID_FOLDS,
+    relative_improvement_tolerance: float = RELATIVE_IMPROVEMENT_TOLERANCE,
+    max_bias_ratio: Optional[float] = MAX_BIAS_RATIO,
+) -> pd.DataFrame:
+    """Select the best (model_family, seasonal_period) candidate for each report.
+
+    Treats each (model_family, candidate_m) triple as a distinct candidate and
+    selects jointly on model family and seasonal period.
+
+    Parameters
+    ----------
+    candidate_summary:
+        Output of ``summarise_candidate_performance`` — one row per
+        (report_id, model_family, candidate_m).
+    min_valid_folds:
+        Minimum valid backtest folds a candidate must have to be eligible.
+    relative_improvement_tolerance:
+        Relative MASE improvement required before a more complex / longer-period
+        candidate is preferred.  Within the tolerance band the simpler candidate
+        (lower MODEL_COMPLEXITY rank) is retained; when complexity is equal, the
+        shorter period is preferred.
+    max_bias_ratio:
+        Scale-invariant bias guardrail.  ``None`` disables it.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per report_id with columns ``_CANDIDATE_OUTPUT_COLS``:
+        report_id, selected_model_family, selected_model_name, selected_m,
+        selection_status, selection_reason, valid_folds, median_mase,
+        mean_wape, mean_bias, fold_win_rate, seasonal_naive_median_mase,
+        improvement_vs_seasonal_naive_pct.
+
+        ``selection_status`` is either ``"selected"`` or
+        ``"no_reliable_model"``.  Sorted by ``report_id`` ascending.
+
+    Raises
+    ------
+    ValueError
+        If any required column is missing from *candidate_summary*.
+
+    Notes
+    -----
+    Selection policy (applied per report_id):
+
+    1. Exclude candidates with fewer than *min_valid_folds* valid folds.
+    2. Apply bias guardrail: exclude candidates where
+       ``|mean_bias| / mean_mae > max_bias_ratio``.
+    3. Rank by ``median_mase`` ascending.
+    4. Build a practical tie group: candidates within
+       ``relative_improvement_tolerance`` (relative) of the best MASE.
+    5. Within the tie group, prefer the simpler model family
+       (``MODEL_COMPLEXITY`` ordering).
+    6. Among equal-complexity candidates, prefer the shorter seasonal period.
+
+    ``seasonal_naive_median_mase`` is the seasonal naive MASE at the *same m*
+    as the selected candidate, extracted before the guardrail filters.
+    ``improvement_vs_seasonal_naive_pct`` is positive when the selected model
+    beats the seasonal naive at the same period.
+    """
+    missing = _CANDIDATE_REQUIRED_INPUT_COLS - set(candidate_summary.columns)
+    if missing:
+        raise ValueError(
+            f"candidate_summary is missing required columns: {sorted(missing)}"
+        )
+
+    if candidate_summary.empty:
+        return pd.DataFrame(columns=_CANDIDATE_OUTPUT_COLS)
+
+    rows: list[dict] = []
+    for _, group in candidate_summary.groupby("report_id", sort=False):
+        rows.append(
+            _select_candidates_for_report(
+                report_df=group.reset_index(drop=True),
+                min_valid_folds=min_valid_folds,
+                rel_tol=relative_improvement_tolerance,
+                max_bias_ratio=max_bias_ratio,
+            )
+        )
+
+    result = pd.DataFrame(rows)[_CANDIDATE_OUTPUT_COLS]
     return result.sort_values("report_id", ignore_index=True)
