@@ -325,15 +325,21 @@ _FORBIDDEN_DEF_NAMES = {
     "append_forecasts_history",
     "append_metrics_history",
     "update_realized_errors",
-    # New evaluation framework — must be imported, not reimplemented
+    # Dynamic-seasonality framework — must be imported, not reimplemented
     "generate_rolling_splits",
+    "evaluate_candidates_across_folds",
     "evaluate_models_across_folds",
     "calculate_horizon_bucket_metrics",
+    "summarise_candidate_performance",
     "summarise_model_performance",
+    "select_candidate_models",
     "select_models",
     "refit_and_forecast",
     "build_production_forecast",
     "build_daily_series_for_all_reports",
+    "profile_seasonality",
+    "build_seasonality_summary",
+    "build_seasonality_candidates",
 }
 
 _REQUIRED_IMPORTS = {
@@ -344,12 +350,22 @@ _REQUIRED_IMPORTS = {
     "build_daily_series_for_all_reports",
     "filter_by_data_criteria",
     "get_project_root",
-    # New evaluation framework
+    # Dynamic-seasonality framework
+    "SEASONAL_CANDIDATES",
+    "NON_SEASONAL_PERIOD",
     "generate_rolling_splits",
-    "evaluate_models_across_folds",
-    "summarise_model_performance",
-    "select_models",
+    "evaluate_candidates_across_folds",
+    "summarise_candidate_performance",
+    "select_candidate_models",
     "build_production_forecast",
+    "profile_seasonality",
+    "build_seasonality_summary",
+    "build_seasonality_candidates",
+}
+
+_FORBIDDEN_COLUMN_REFS = {
+    "selected_model",   # replaced by selected_model_family / selected_model_name / selected_m
+    "SEASONAL_PERIOD",  # replaced by SEASONAL_CANDIDATES / NON_SEASONAL_PERIOD
 }
 
 
@@ -360,13 +376,18 @@ class TestNotebook05ImportContract:
     def nb_source(self):
         with open(_NOTEBOOK_PATH) as f:
             nb = json.load(f)
-        # Concatenate all code-cell source lines into one string
-        all_code = "\n".join(
+        return "\n".join(
             "".join(cell["source"])
             for cell in nb["cells"]
             if cell["cell_type"] == "code"
         )
-        return all_code
+
+    @pytest.fixture(scope="class")
+    def nb_source_all(self):
+        """All cell sources (code + markdown)."""
+        with open(_NOTEBOOK_PATH) as f:
+            nb = json.load(f)
+        return "\n".join("".join(cell["source"]) for cell in nb["cells"])
 
     def test_no_inline_function_definitions(self, nb_source):
         """Forbidden functions must not be defined inline in the notebook."""
@@ -388,9 +409,9 @@ class TestNotebook05ImportContract:
             f"These functions are not imported in notebook 05: {sorted(missing)}"
         )
 
-    def test_canonical_input_file_named(self, nb_source):
-        """The notebook must reference the canonical input filename."""
-        assert "mart_report_daily_series" in nb_source, (
+    def test_canonical_input_file_named(self, nb_source_all):
+        """The notebook must reference the canonical input filename (code or markdown)."""
+        assert "mart_report_daily_series" in nb_source_all, (
             "Notebook 05 must reference mart_report_daily_series.csv as the input file."
         )
 
@@ -399,3 +420,40 @@ class TestNotebook05ImportContract:
         assert "generate_synthetic" not in nb_source, (
             "Notebook 05 must not call or define generate_synthetic_* functions."
         )
+
+    def test_no_stale_column_references(self, nb_source):
+        """Notebook 05 must not reference old single-model column names or SEASONAL_PERIOD."""
+        import re
+        for forbidden in _FORBIDDEN_COLUMN_REFS:
+            # Use word boundary so selected_model_family does not match selected_model
+            pattern = r"\b" + re.escape(forbidden) + r"\b"
+            matches = re.findall(pattern, nb_source)
+            assert not matches, (
+                f"Notebook 05 references stale API symbol {forbidden!r} ({len(matches)} occurrence(s)). "
+                f"Use selected_model_family / selected_model_name / selected_m / "
+                f"SEASONAL_CANDIDATES / NON_SEASONAL_PERIOD instead."
+            )
+
+    def test_uses_candidate_aware_evaluation(self, nb_source):
+        """Notebook 05 must use evaluate_candidates_across_folds, not the old fixed-registry path."""
+        assert "evaluate_candidates_across_folds" in nb_source, (
+            "Notebook 05 must call evaluate_candidates_across_folds "
+            "(not the old evaluate_models_across_folds with a fixed model registry)."
+        )
+
+    def test_uses_candidate_selection(self, nb_source):
+        """Notebook 05 must use select_candidate_models, not the old select_models."""
+        assert "select_candidate_models" in nb_source, (
+            "Notebook 05 must call select_candidate_models."
+        )
+        assert "select_models(" not in nb_source, (
+            "Notebook 05 must not call the deprecated select_models()."
+        )
+
+    def test_seasonality_diagnostics_imported(self, nb_source):
+        """Notebook 05 must import and demonstrate the seasonality diagnostic outputs."""
+        for name in ("build_seasonality_summary", "build_seasonality_candidates",
+                     "SUMMARY_COLS", "CANDIDATE_COLS"):
+            assert name in nb_source, (
+                f"Notebook 05 must import {name!r} from src.models.seasonality_diagnostics."
+            )
