@@ -1341,6 +1341,75 @@ def run_backtest_stage(
     return predictions, fold_metrics, model_summary, selection
 
 
+def run_candidate_backtest_stage(
+    eligible_series: dict[str, pd.Series],
+    backtest_config=None,
+    candidate_periods: tuple = None,
+    include_ets: bool = True,
+    include_arima: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Run candidate-aware rolling backtest evaluation for all eligible reports.
+
+    Uses ``evaluate_candidates_across_folds`` (per-fold seasonality profiling)
+    instead of the fixed five-model registry.  Returns one selection row per
+    report with ``selected_model_family``, ``selected_model_name``, and
+    ``selected_m`` as separate columns, enabling period-preserving refitting.
+
+    Parameters
+    ----------
+    eligible_series:
+        Per-report daily series that have passed data-sufficiency checks.
+    backtest_config:
+        ``BacktestConfig`` instance; defaults to central config values.
+    candidate_periods:
+        Tuple of candidate seasonal periods.  Defaults to ``SEASONAL_CANDIDATES``.
+    include_ets, include_arima:
+        Whether to include ETS / Auto-ARIMA candidates.
+
+    Returns
+    -------
+    predictions, fold_metrics, candidate_summary, selection : pd.DataFrame
+        ``candidate_summary`` has one row per (report_id, model_family, candidate_m).
+        ``selection`` has ``selected_model_family``, ``selected_m`` etc. as separate
+        columns — ready for ``build_production_forecast``.
+    """
+    from src.models.backtest_evaluation import BacktestConfig, evaluate_candidates_across_folds
+    from src.models.model_summary import summarise_candidate_performance
+    from src.models.selection import select_candidate_models
+
+    if candidate_periods is None:
+        candidate_periods = SEASONAL_CANDIDATES
+
+    if backtest_config is None:
+        backtest_config = BacktestConfig()
+
+    all_predictions: list[pd.DataFrame] = []
+    all_fold_metrics: list[pd.DataFrame] = []
+
+    for rid, series in eligible_series.items():
+        try:
+            preds, fmetrics = evaluate_candidates_across_folds(
+                rid, series, backtest_config,
+                candidate_periods=candidate_periods,
+                include_ets=include_ets,
+                include_arima=include_arima,
+            )
+            all_predictions.append(preds)
+            all_fold_metrics.append(fmetrics)
+        except Exception:
+            pass
+
+    if not all_fold_metrics:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    predictions = pd.concat(all_predictions, ignore_index=True)
+    fold_metrics = pd.concat(all_fold_metrics, ignore_index=True)
+    candidate_summary = summarise_candidate_performance(fold_metrics)
+    selection = select_candidate_models(candidate_summary)
+
+    return predictions, fold_metrics, candidate_summary, selection
+
+
 def save_production_outputs(
     production_df: pd.DataFrame,
     model_summary: pd.DataFrame,
@@ -1480,13 +1549,17 @@ def run_production_pipeline(
     eligible_series = {rid: series_dict[rid] for rid in passing_ids}
 
     # Steps 1–3: Backtest → summarize → select
-    predictions, fold_metrics, model_summary, selection = run_backtest_stage(
+    # Use candidate-aware stage: evaluates each (model_family, candidate_m)
+    # combination per fold and selects jointly, so selected_m is always
+    # available for period-preserving production refitting.
+    predictions, fold_metrics, model_summary, selection = run_candidate_backtest_stage(
         eligible_series,
-        model_registry=model_registry,
         backtest_config=backtest_config,
     )
 
-    # Steps 4–5: Refit on full history → generate production forecasts
+    # Steps 4–5: Refit on full history → generate production forecasts.
+    # Pass model_summary (candidate_summary) so fallback candidates are
+    # available when the primary selected model fails to refit.
     production_df = build_production_forecast(
         selection=selection,
         series_dict=eligible_series,
@@ -1494,6 +1567,7 @@ def run_production_pipeline(
         generated_at=generated_at,
         horizon=horizon,
         selection_run_id=run_id,
+        candidate_summary=model_summary,
     )
 
     # Step 6: Save with lineage
