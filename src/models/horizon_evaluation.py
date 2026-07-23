@@ -42,7 +42,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_CANDIDATES
+from src.config.forecasting import FORECAST_HORIZON_DAYS
 from src.models.metrics import calculate_interval_metrics, calculate_point_metrics
 
 
@@ -72,7 +72,7 @@ _OUTPUT_COLS = [
     "horizon_bucket",
     "mae",
     "wape",
-    "mase",
+    "mase_lag1",
     "bias",
     "interval_coverage",
     "observation_count",
@@ -109,7 +109,6 @@ def _bucket_metrics_row(
     bucket_name: str,
     bucket_preds: pd.DataFrame,
     fold_train_series: pd.Series,
-    seasonal_period: int,
 ) -> dict:
     """Compute metrics for one (fold, model, bucket) group.
 
@@ -119,8 +118,10 @@ def _bucket_metrics_row(
         Subset of the predictions DataFrame filtered to this bucket's
         horizon_step range.  May contain NaN forecasts (failed model-folds).
     fold_train_series:
-        Full training series for this fold — used as the MASE denominator
-        regardless of which bucket is being evaluated.
+        Full training series for this fold — used as the mase_lag1 denominator
+        (lag-1 random-walk error) regardless of which bucket is being evaluated.
+        The denominator is shared across all buckets in the same fold so that
+        mase_lag1 values are comparable.
     """
     base = {
         "report_id": report_id,
@@ -138,7 +139,7 @@ def _bucket_metrics_row(
             **base,
             "mae": np.nan,
             "wape": np.nan,
-            "mase": np.nan,
+            "mase_lag1": np.nan,
             "bias": np.nan,
             "interval_coverage": np.nan,
             "observation_count": 0,
@@ -147,17 +148,13 @@ def _bucket_metrics_row(
     actual_arr = valid["actual"].to_numpy(dtype=float)
     forecast_arr = valid["forecast"].to_numpy(dtype=float)
 
-    # Point metrics — pass fold training series so MASE denominator uses the
-    # correct in-fold seasonal-naive error, not any cross-fold approximation.
-    # calculate_point_metrics computes:
-    #   MASE = bucket_mae / mean(|y_train[t] - y_train[t-m]|)
-    # The denominator is from the *training* series; only the MAE numerator
-    # changes between buckets.
+    # mase_lag1 uses a lag-1 denominator from the fold training series.
+    # Only the MAE numerator changes between buckets; the denominator is constant
+    # per fold so mase_lag1 values are proportional to MAE and remain comparable.
     pt = calculate_point_metrics(
         actual_arr,
         forecast_arr,
         training_series=fold_train_series.to_numpy(),
-        seasonal_period=seasonal_period,
     )
 
     # Interval coverage — only when both bounds are present and non-NaN
@@ -179,7 +176,7 @@ def _bucket_metrics_row(
         **base,
         "mae": pt["mae"],
         "wape": pt["wape"],
-        "mase": pt["mase"],
+        "mase_lag1": pt["mase_lag1"],
         "bias": pt["bias"],
         "interval_coverage": interval_coverage,
         "observation_count": len(valid),
@@ -193,7 +190,6 @@ def _bucket_metrics_row(
 def calculate_horizon_bucket_metrics(
     predictions: pd.DataFrame,
     series_lookup: dict[str, pd.Series],
-    seasonal_period: int = SEASONAL_CANDIDATES[0],
     buckets: Optional[list[tuple[str, int, int]]] = None,
 ) -> pd.DataFrame:
     """Compute per-bucket metrics from prediction-level backtest results.
@@ -209,11 +205,8 @@ def calculate_horizon_bucket_metrics(
     series_lookup:
         Mapping of ``report_id → pd.Series`` (the original daily series with a
         DatetimeIndex) used to reconstruct each fold's training window for the
-        MASE denominator.  Must cover every ``report_id`` present in
+        mase_lag1 denominator.  Must cover every ``report_id`` present in
         *predictions*.
-    seasonal_period:
-        Lag used when computing the MASE denominator from the training series.
-        Must match the value used in ``evaluate_models_across_folds``.
     buckets:
         Override the default ``HORIZON_BUCKETS`` list.  Each element is a
         ``(name, step_lo, step_hi)`` tuple with inclusive step bounds.  Pass
@@ -224,7 +217,7 @@ def calculate_horizon_bucket_metrics(
     pd.DataFrame
         One row per (report_id, fold_number, model_name, horizon_bucket).
         Columns: ``report_id``, ``model_name``, ``fold_number``,
-        ``cutoff_date``, ``horizon_bucket``, ``mae``, ``wape``, ``mase``,
+        ``cutoff_date``, ``horizon_bucket``, ``mae``, ``wape``, ``mase_lag1``,
         ``bias``, ``interval_coverage``, ``observation_count``.
         Sorted by (report_id, model_name, fold_number, horizon_bucket).
 
@@ -301,7 +294,7 @@ def calculate_horizon_bucket_metrics(
                     "horizon_bucket": bucket_name,
                     "mae": np.nan,
                     "wape": np.nan,
-                    "mase": np.nan,
+                    "mase_lag1": np.nan,
                     "bias": np.nan,
                     "interval_coverage": np.nan,
                     "observation_count": 0,
@@ -317,7 +310,6 @@ def calculate_horizon_bucket_metrics(
                     bucket_name=bucket_name,
                     bucket_preds=bucket_preds,
                     fold_train_series=fold_train,
-                    seasonal_period=seasonal_period,
                 )
             )
 

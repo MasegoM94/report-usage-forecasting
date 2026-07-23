@@ -22,12 +22,12 @@ class TestPerfectForecast:
         assert m["wape"] == pytest.approx(0.0)
         assert m["bias"] == pytest.approx(0.0)
 
-    def test_mase_zero_when_training_provided(self):
+    def test_mase_lag1_zero_when_training_provided(self):
         actual = [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0]
         training = [3.0, 5.0, 3.0, 5.0, 3.0, 5.0, 3.0, 5.0]
         m = calculate_point_metrics(actual, actual, training_series=training)
-        assert m["mase"] == pytest.approx(0.0)
-        assert m["mase_status"] == "ok"
+        assert m["mase_lag1"] == pytest.approx(0.0)
+        assert m["mase_lag1_status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -103,61 +103,160 @@ class TestAllZeroActuals:
 
 
 # ---------------------------------------------------------------------------
-# 6. Valid MASE when training series is long enough
+# 6. Valid mase_lag1 when training series has ≥ 2 observations
 # ---------------------------------------------------------------------------
 
-class TestValidMASE:
-    def test_mase_computed_and_status_ok(self):
+class TestValidMASELag1:
+    def test_mase_lag1_computed_and_status_ok(self):
         rng = np.random.default_rng(42)
         training = rng.integers(1, 20, size=30).astype(float)
         actual = rng.integers(1, 20, size=10).astype(float)
         forecast = actual + rng.uniform(-1, 1, size=10)
-        m = calculate_point_metrics(actual, forecast, training_series=training, seasonal_period=SEASONAL_CANDIDATES[0])
-        assert not np.isnan(m["mase"])
-        assert m["mase_status"] == "ok"
+        m = calculate_point_metrics(actual, forecast, training_series=training)
+        assert not np.isnan(m["mase_lag1"])
+        assert m["mase_lag1_status"] == "ok"
 
-    def test_mase_formula_matches_manual(self):
+    def test_mase_lag1_formula_uses_lag1_denominator(self):
+        # training = [1, 3, 5, 7, 9]; lag-1 diffs = [2, 2, 2, 2]; denom = 2.0
+        training = np.array([1.0, 3.0, 5.0, 7.0, 9.0])
+        actual = np.array([5.0, 5.0])
+        forecast = np.array([4.0, 6.0])
+        m = calculate_point_metrics(actual, forecast, training_series=training)
+        # mae = mean(|5-4|, |5-6|) = 1.0; mase_lag1 = 1.0 / 2.0 = 0.5
+        assert m["mae"] == pytest.approx(1.0)
+        assert m["mase_lag1"] == pytest.approx(0.5)
+
+    def test_mase_lag1_same_regardless_of_candidate_period(self):
+        """Two calls with different candidate_seasonal_period must produce identical mase_lag1."""
+        training = np.arange(1, 31, dtype=float)
+        actual = np.array([15.0, 16.0])
+        forecast = np.array([14.0, 17.0])
+        m7 = calculate_point_metrics(
+            actual, forecast, training_series=training,
+            candidate_seasonal_period=7,
+        )
+        m30 = calculate_point_metrics(
+            actual, forecast, training_series=training,
+            candidate_seasonal_period=30,
+        )
+        assert m7["mase_lag1"] == pytest.approx(m30["mase_lag1"])
+
+
+# ---------------------------------------------------------------------------
+# 7. mase_m — per-candidate diagnostic using candidate's own period
+# ---------------------------------------------------------------------------
+
+class TestMaseMDiagnostic:
+    def test_mase_m_nan_when_no_candidate_period(self):
+        training = np.arange(1.0, 20.0)
+        actual = [5.0, 6.0]
+        forecast = [4.0, 7.0]
+        m = calculate_point_metrics(actual, forecast, training_series=training)
+        assert np.isnan(m["mase_m"])
+        assert "no candidate seasonal period" in m["mase_m_status"]
+
+    def test_mase_m_nan_when_candidate_period_is_1(self):
+        training = np.arange(1.0, 20.0)
+        actual = [5.0, 6.0]
+        forecast = [4.0, 7.0]
+        m = calculate_point_metrics(
+            actual, forecast, training_series=training,
+            candidate_seasonal_period=1,
+        )
+        assert np.isnan(m["mase_m"])
+
+    def test_mase_m_uses_candidate_period_denominator(self):
+        # training=[1,2,3,4,5,6,7,8]; lag-7 error: |8-1|=7 → denom=7; mae=1.0
         training = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
         actual = np.array([5.0, 5.0])
         forecast = np.array([4.0, 6.0])
-        m = calculate_point_metrics(actual, forecast, training_series=training, seasonal_period=SEASONAL_CANDIDATES[0])
-        # seasonal naive in-sample error: |y[7]-y[0]| = |8-1| = 7 → denom = 7
-        # MAE = mean(|5-4|, |5-6|) = 1.0
+        m = calculate_point_metrics(
+            actual, forecast, training_series=training,
+            candidate_seasonal_period=7,
+        )
         assert m["mae"] == pytest.approx(1.0)
-        assert m["mase"] == pytest.approx(1.0 / 7.0)
+        assert m["mase_m"] == pytest.approx(1.0 / 7.0)
+
+    def test_mase_m_differs_from_mase_lag1_when_lag_differs(self):
+        training = np.arange(1.0, 31.0)
+        actual = [15.0, 16.0]
+        forecast = [14.0, 17.0]
+        m = calculate_point_metrics(
+            actual, forecast, training_series=training,
+            candidate_seasonal_period=7,
+        )
+        # lag-1 and lag-7 denominators are different for a trending series
+        assert not np.isnan(m["mase_lag1"])
+        assert not np.isnan(m["mase_m"])
+        assert m["mase_lag1"] != pytest.approx(m["mase_m"])
+
+    def test_sarima_m7_and_m30_share_mase_lag1_denominator(self):
+        """Simulates evaluating SARIMA-m7 and SARIMA-m30 on the same fold.
+
+        Both should produce the same mase_lag1 because the lag-1 denominator is
+        computed from the same training series and is independent of candidate_m.
+        This is the key property that makes cross-candidate ranking fair.
+        """
+        training = np.arange(1.0, 91.0)    # 90 obs — enough for both m=7 and m=30
+        actual = np.array([50.0, 51.0, 52.0, 53.0])
+        # SARIMA-m7: slightly better forecast
+        forecast_m7 = np.array([49.0, 51.0, 52.0, 54.0])
+        # SARIMA-m30: slightly worse forecast
+        forecast_m30 = np.array([48.0, 52.0, 53.0, 55.0])
+
+        result_m7 = calculate_point_metrics(
+            actual, forecast_m7, training_series=training,
+            candidate_seasonal_period=7,
+        )
+        result_m30 = calculate_point_metrics(
+            actual, forecast_m30, training_series=training,
+            candidate_seasonal_period=30,
+        )
+
+        # Both use the same training series → same lag-1 denominator
+        # mase_lag1 values differ only because MAE differs
+        lag1_denom_m7 = result_m7["mae"] / result_m7["mase_lag1"]
+        lag1_denom_m30 = result_m30["mae"] / result_m30["mase_lag1"]
+        assert lag1_denom_m7 == pytest.approx(lag1_denom_m30), (
+            "SARIMA-m7 and SARIMA-m30 must use the same lag-1 denominator "
+            "so their mase_lag1 scores are directly comparable."
+        )
+
+        # mase_m values DIFFER because they use different denominators
+        assert result_m7["mase_m"] != pytest.approx(result_m30["mase_m"])
 
 
 # ---------------------------------------------------------------------------
-# 7. Insufficient history → mase is NaN with clear status
+# 8. Insufficient history → mase_lag1 is NaN with clear status
 # ---------------------------------------------------------------------------
 
-class TestInsufficientHistoryMASE:
+class TestInsufficientHistoryMASELag1:
     def test_no_training_series(self):
         m = calculate_point_metrics([5.0, 6.0], [5.0, 6.0])
-        assert np.isnan(m["mase"])
-        assert "no training series provided" in m["mase_status"]
+        assert np.isnan(m["mase_lag1"])
+        assert "no training series provided" in m["mase_lag1_status"]
 
-    def test_training_too_short(self):
+    def test_single_obs_training_too_short_for_lag1(self):
+        # lag-1 needs ≥ 2 observations; a single observation is insufficient
         m = calculate_point_metrics(
             [5.0, 6.0], [5.0, 6.0],
-            training_series=[1.0, 2.0, 3.0],  # only 3 obs, need ≥8 for period=7 (SEASONAL_CANDIDATES[0])
-            seasonal_period=SEASONAL_CANDIDATES[0],
+            training_series=[10.0],
         )
-        assert np.isnan(m["mase"])
-        assert "too short" in m["mase_status"]
+        assert np.isnan(m["mase_lag1"])
+        assert "too short" in m["mase_lag1_status"]
 
-    def test_exactly_at_boundary_too_short(self):
-        # Need > seasonal_period obs; exactly seasonal_period is still too short
+    def test_two_obs_is_sufficient_for_lag1(self):
         m = calculate_point_metrics(
-            [1.0], [1.0],
-            training_series=list(range(7)),  # 7 obs, need ≥8
-            seasonal_period=SEASONAL_CANDIDATES[0],
+            [5.0], [5.0],
+            training_series=[3.0, 6.0],
         )
-        assert np.isnan(m["mase"])
+        # lag-1 error = |6-3| = 3; mae = 0 → mase_lag1 = 0
+        assert m["mase_lag1"] == pytest.approx(0.0)
+        assert m["mase_lag1_status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
-# 8. Interval coverage — fraction within bounds
+# 9. Interval coverage — fraction within bounds
 # ---------------------------------------------------------------------------
 
 class TestIntervalCoverage:
@@ -186,7 +285,7 @@ class TestIntervalCoverage:
 
 
 # ---------------------------------------------------------------------------
-# 9. Interval width — mean of (upper - lower)
+# 10. Interval width — mean of (upper - lower)
 # ---------------------------------------------------------------------------
 
 class TestIntervalWidth:
@@ -204,7 +303,7 @@ class TestIntervalWidth:
 
 
 # ---------------------------------------------------------------------------
-# 10. Mismatched lengths → ValueError
+# 11. Mismatched lengths → ValueError
 # ---------------------------------------------------------------------------
 
 class TestMismatchedLengths:
@@ -218,7 +317,7 @@ class TestMismatchedLengths:
 
 
 # ---------------------------------------------------------------------------
-# 11. Null / non-numeric input → clear error or NaN handling
+# 12. Null / non-numeric input → clear error or NaN handling
 # ---------------------------------------------------------------------------
 
 class TestNullAndNonNumericInputs:

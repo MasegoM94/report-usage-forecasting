@@ -160,7 +160,7 @@ class TestMetricRowCount:
         _, metrics = eval_results_alpha
         required = {
             "report_id", "fold_number", "cutoff_date", "model_name",
-            "mae", "rmse", "wape", "mase", "bias",
+            "mae", "rmse", "wape", "mase_lag1", "mase_m", "bias",
             "interval_coverage", "mean_interval_width",
             "fit_status", "error_message",
         }
@@ -307,7 +307,7 @@ class TestFailedModelHandling:
     def test_failed_model_metrics_are_nan(self):
         _, metrics = self._run_with_failure()
         failed = metrics[metrics["model_name"] == "always_fails"]
-        for col in ["mae", "rmse", "wape", "mase", "bias"]:
+        for col in ["mae", "rmse", "wape", "mase_lag1", "mase_m", "bias"]:
             assert failed[col].isna().all(), f"{col} should be NaN for failed models"
 
     def test_failed_model_has_error_message(self):
@@ -336,45 +336,41 @@ class TestFailedModelHandling:
 # 7. MASE uses fold training data
 # ---------------------------------------------------------------------------
 
-class TestMASEUsesFoldTrainingData:
-    def test_mase_is_finite_for_successful_models(self, eval_results_alpha):
+class TestMASELag1UsesFoldTrainingData:
+    def test_mase_lag1_is_finite_for_successful_models(self, eval_results_alpha):
         _, metrics = eval_results_alpha
         good = metrics[metrics["fit_status"] != "failed"]
-        # MASE may be NaN if seasonal naive denominator is zero, but should not
-        # raise or be Inf
-        finite_or_nan = good["mase"].apply(
+        # mase_lag1 may be NaN if lag-1 denominator is zero (constant series),
+        # but must not be Inf
+        finite_or_nan = good["mase_lag1"].apply(
             lambda v: pd.isna(v) or np.isfinite(v)
         )
-        assert finite_or_nan.all(), "MASE contains Inf values"
+        assert finite_or_nan.all(), "mase_lag1 contains Inf values"
 
-    def test_mase_differs_between_folds_when_training_differs(self, eval_results_alpha):
+    def test_mase_lag1_differs_between_folds_when_training_differs(self, eval_results_alpha):
         """Expanding window → fold 2 has more training data than fold 1.
-        MASE should differ because the seasonal-naive denominator is recomputed
+        mase_lag1 should differ because the lag-1 denominator is recomputed
         from each fold's own training window."""
         _, metrics = eval_results_alpha
         naive_metrics = metrics[metrics["model_name"] == "naive"].sort_values("fold_number")
         if len(naive_metrics) >= 2:
-            mase_1 = naive_metrics.iloc[0]["mase"]
-            mase_2 = naive_metrics.iloc[1]["mase"]
-            # If both are finite, they should not be equal (different training windows)
+            mase_1 = naive_metrics.iloc[0]["mase_lag1"]
+            mase_2 = naive_metrics.iloc[1]["mase_lag1"]
             if pd.notna(mase_1) and pd.notna(mase_2):
-                # This may coincidentally be equal for constant series, so only
-                # assert they are not numerically identical to machine precision
-                # when the series has variability (which our fixture does)
                 assert mase_1 != pytest.approx(mase_2), (
-                    "MASE is identical across folds with different training windows — "
+                    "mase_lag1 is identical across folds with different training windows — "
                     "check that fold.train_series is being passed to calculate_point_metrics"
                 )
 
-    def test_mase_matches_manual_calculation(self):
-        """Verify MASE is computed from fold training series, not the full series."""
+    def test_mase_lag1_matches_manual_calculation(self):
+        """Verify mase_lag1 is computed from fold training series with lag-1 denominator."""
         # Use a deterministic series: values 1..50
         idx = pd.date_range("2022-01-01", periods=50, freq="D")
         series = pd.Series(np.arange(1, 51, dtype=float), index=idx)
 
         cfg = BacktestConfig(
             horizon=7, n_folds=1, step=7,
-            min_train_size=30, seasonal_period=7
+            min_train_size=30,
         )
         _, metrics = evaluate_models_across_folds(
             "TEST", series, {"naive": forecast_naive}, cfg
@@ -386,14 +382,14 @@ class TestMASEUsesFoldTrainingData:
         test = series.iloc[fold_cutoff_idx + 1: fold_cutoff_idx + 8].to_numpy()
         forecast_val = float(train[-1])  # naive forecast = last value = 37.0
 
-        # Manual MASE
-        seasonal_errors = np.abs(train[7:] - train[:-7])
-        denom = float(np.mean(seasonal_errors))
+        # Manual mase_lag1: lag-1 denominator from fold training series
+        lag1_errors = np.abs(train[1:] - train[:-1])  # all 1s for arange(1,51)
+        denom = float(np.mean(lag1_errors))
         mae = float(np.mean(np.abs(test - forecast_val)))
-        expected_mase = mae / denom if denom != 0 else np.nan
+        expected_mase_lag1 = mae / denom if denom != 0 else np.nan
 
-        if pd.notna(expected_mase):
-            assert row["mase"] == pytest.approx(expected_mase, rel=1e-6)
+        if pd.notna(expected_mase_lag1):
+            assert row["mase_lag1"] == pytest.approx(expected_mase_lag1, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------

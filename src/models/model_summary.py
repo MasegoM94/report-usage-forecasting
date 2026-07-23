@@ -55,7 +55,7 @@ MASE_TIE_TOLERANCE: float = 0.01
 # Required columns in the input fold_metrics DataFrame
 _REQUIRED_INPUT_COLS = {
     "report_id", "fold_number", "model_name",
-    "mae", "rmse", "wape", "mase", "bias",
+    "mae", "rmse", "wape", "mase_lag1", "bias",
     "fit_status",
 }
 
@@ -66,9 +66,9 @@ _OUTPUT_COLS = [
     "valid_folds",
     "failed_folds",
     "has_sufficient_folds",
-    "median_mase",
-    "mean_mase",
-    "mase_std",
+    "median_mase_lag1",
+    "mean_mase_lag1",
+    "mase_lag1_std",
     "mean_wape",
     "mean_mae",
     "mean_rmse",
@@ -112,19 +112,19 @@ def _fold_winners(
             columns=["report_id", "fold_number", "model_name", "is_fold_winner"]
         )
 
-    # Minimum MASE per (report_id, fold_number) across all competing models
+    # Minimum mase_lag1 per (report_id, fold_number) across all competing models
     fold_min = (
         valid_folds_df
-        .groupby(["report_id", "fold_number"])["mase"]
+        .groupby(["report_id", "fold_number"])["mase_lag1"]
         .min()
         .rename("min_fold_mase")
         .reset_index()
     )
 
-    merged = valid_folds_df[["report_id", "fold_number", "model_name", "mase"]].merge(
+    merged = valid_folds_df[["report_id", "fold_number", "model_name", "mase_lag1"]].merge(
         fold_min, on=["report_id", "fold_number"], how="left"
     )
-    merged["is_fold_winner"] = merged["mase"] <= (merged["min_fold_mase"] + tie_tolerance)
+    merged["is_fold_winner"] = merged["mase_lag1"] <= (merged["min_fold_mase"] + tie_tolerance)
     return merged[["report_id", "fold_number", "model_name", "is_fold_winner"]]
 
 
@@ -134,14 +134,14 @@ def _aggregate_valid(valid_df: pd.DataFrame) -> pd.DataFrame:
                      "mean_interval_width": "mean_interval_width"}
 
     agg_spec: dict[str, tuple[str, str]] = {
-        "valid_folds":  ("mase", "count"),      # proxy: rows with non-NaN mase
-        "median_mase":  ("mase", "median"),
-        "mean_mase":    ("mase", "mean"),
-        "mase_std":     ("mase", "std"),
-        "mean_wape":    ("wape", "mean"),
-        "mean_mae":     ("mae", "mean"),
-        "mean_rmse":    ("rmse", "mean"),
-        "mean_bias":    ("bias", "mean"),
+        "valid_folds":      ("mase_lag1", "count"),  # proxy: rows with non-NaN mase_lag1
+        "median_mase_lag1": ("mase_lag1", "median"),
+        "mean_mase_lag1":   ("mase_lag1", "mean"),
+        "mase_lag1_std":    ("mase_lag1", "std"),
+        "mean_wape":        ("wape", "mean"),
+        "mean_mae":         ("mae", "mean"),
+        "mean_rmse":        ("rmse", "mean"),
+        "mean_bias":        ("bias", "mean"),
     }
 
     # Build aggregation using groupby + agg
@@ -262,8 +262,8 @@ def summarise_model_performance(
         .reset_index()
     )
 
-    # Valid rows: not failed AND MASE is finite (non-NaN)
-    valid_mask = (~is_failed) & fold_metrics["mase"].notna()
+    # Valid rows: not failed AND mase_lag1 is finite (non-NaN)
+    valid_mask = (~is_failed) & fold_metrics["mase_lag1"].notna()
     valid_df = fold_metrics[valid_mask].copy()
 
     # ------------------------------------------------------------------
@@ -325,9 +325,9 @@ def summarise_model_performance(
 
     summary = summary[_OUTPUT_COLS].copy()
 
-    # Sort: report_id ascending, then mean_mase ascending with NaN last
+    # Sort: report_id ascending, then mean_mase_lag1 ascending with NaN last
     summary = summary.sort_values(
-        ["report_id", "mean_mase"],
+        ["report_id", "mean_mase_lag1"],
         ascending=[True, True],
         na_position="last",
         ignore_index=True,

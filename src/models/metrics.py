@@ -6,8 +6,8 @@ coverage — import from this module instead.
 
 Public API
 ----------
-calculate_point_metrics(actual, forecast, training_series, seasonal_period)
-    MAE, RMSE, WAPE, MASE, bias for a single evaluation window.
+calculate_point_metrics(actual, forecast, training_series, candidate_seasonal_period)
+    MAE, RMSE, WAPE, mase_lag1, mase_m, bias for a single evaluation window.
 
 calculate_interval_metrics(actual, lower_bound, upper_bound)
     Empirical coverage and mean width of prediction intervals.
@@ -25,14 +25,23 @@ Design rules
   actuals are zero (common in daily report-usage data) and produces
   asymmetrically large values when actuals are small.  WAPE is the
   recommended scale-free alternative.
+* ``mase_lag1`` always uses a lag-1 random-walk in-sample error as the
+  denominator, making it directly comparable across all candidates regardless
+  of their seasonal period.  A common denominator is required: if SARIMA-m7
+  used a lag-7 denominator and SARIMA-m30 used a lag-30 denominator, their
+  MASE scores would measure performance relative to different baselines and
+  cannot be fairly ranked against each other.
+* ``mase_m`` uses the candidate's own seasonal period as the denominator and
+  is provided for diagnostic purposes only — never use it for cross-candidate
+  ranking.
 """
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-
-from src.config.forecasting import SEASONAL_CANDIDATES as _SEASONAL_CANDIDATES
 
 
 # ---------------------------------------------------------------------------
@@ -71,9 +80,9 @@ def calculate_point_metrics(
     actual: "np.ndarray | pd.Series | list",
     forecast: "np.ndarray | pd.Series | list",
     training_series: "np.ndarray | pd.Series | list | None" = None,
-    seasonal_period: int = _SEASONAL_CANDIDATES[0],
+    candidate_seasonal_period: Optional[int] = None,
 ) -> dict[str, float]:
-    """Compute MAE, RMSE, WAPE, MASE, and bias for a single evaluation window.
+    """Compute MAE, RMSE, WAPE, mase_lag1, mase_m, and bias for a single evaluation window.
 
     Parameters
     ----------
@@ -83,13 +92,13 @@ def calculate_point_metrics(
     forecast:
         Predicted values aligned with *actual*.
     training_series:
-        In-sample observations used to compute the MASE denominator (the mean
-        absolute seasonal-naive error over the training window).  When
-        ``None``, ``mase`` is ``np.nan`` and ``mase_status`` explains why.
-    seasonal_period:
-        Seasonal lag used for the MASE denominator (default 7 for weekly data).
-        The training series must contain at least ``seasonal_period + 1`` values
-        for a valid denominator.
+        In-sample observations used to compute the MASE denominators.  When
+        ``None``, ``mase_lag1`` and ``mase_m`` are ``np.nan``.
+    candidate_seasonal_period:
+        When provided and greater than 1, ``mase_m`` is computed using this
+        lag as the seasonal-naive denominator.  This is a per-candidate
+        diagnostic metric only — it is not used for cross-candidate ranking.
+        When ``None`` or ``<= 1``, ``mase_m`` is ``np.nan``.
 
     Returns
     -------
@@ -98,19 +107,21 @@ def calculate_point_metrics(
         rmse            — Root Mean Squared Error: sqrt(mean((actual - forecast)²))
         wape            — Weighted Absolute Percentage Error:
                           sum(|actual - forecast|) / sum(|actual|).
-                          ``np.nan`` when all actuals are zero (``wape_status``
-                          explains).
+                          ``np.nan`` when all actuals are zero.
         bias            — Mean signed error: mean(forecast - actual).
-                          Positive = systematic over-forecast,
-                          negative = systematic under-forecast.
-        mase            — Mean Absolute Scaled Error:
-                          mae / mean_absolute_seasonal_naive_error_in_sample.
+        mase_lag1       — Mean Absolute Scaled Error using a lag-1 random-walk
+                          in-sample error as the denominator.  This is the
+                          primary MASE used for cross-candidate ranking because
+                          every candidate uses the same denominator within a fold.
                           ``np.nan`` when training data is absent or too short
-                          (``mase_status`` explains).
+                          (needs ≥ 2 observations).
+        mase_m          — MASE using the candidate's own ``candidate_seasonal_period``
+                          lag as the denominator.  Diagnostic only.  ``np.nan``
+                          when ``candidate_seasonal_period`` is not provided or
+                          when training data is insufficient.
         wape_status     — "ok" | "undefined: all actuals are zero"
-        mase_status     — "ok" | "undefined: no training series provided" |
-                          "undefined: training series too short for seasonal_period=N" |
-                          "undefined: seasonal naive denominator is zero"
+        mase_lag1_status — "ok" | "undefined: ..."
+        mase_m_status   — "ok" | "undefined: ..."
         n_eval          — Number of evaluation observations used.
 
     Raises
@@ -129,9 +140,11 @@ def calculate_point_metrics(
             "rmse": np.nan,
             "wape": np.nan,
             "bias": np.nan,
-            "mase": np.nan,
+            "mase_lag1": np.nan,
+            "mase_m": np.nan,
             "wape_status": "undefined: empty evaluation window",
-            "mase_status": "undefined: empty evaluation window",
+            "mase_lag1_status": "undefined: empty evaluation window",
+            "mase_m_status": "undefined: empty evaluation window",
             "n_eval": 0,
         }
 
@@ -151,17 +164,30 @@ def calculate_point_metrics(
         wape_val = float(np.sum(abs_errors) / abs_actual_sum)
         wape_status = "ok"
 
-    # MASE — requires training series with enough history
-    mase_val, mase_status = _compute_mase(mae, training_series, seasonal_period)
+    # mase_lag1 — always uses lag-1 random-walk denominator.
+    # This is the primary ranking metric: every candidate in a fold uses the
+    # same denominator, so scores are directly comparable regardless of m.
+    mase_lag1_val, mase_lag1_status = _compute_mase(mae, training_series, 1)
+
+    # mase_m — per-candidate diagnostic using the candidate's own seasonal lag.
+    if candidate_seasonal_period is not None and candidate_seasonal_period > 1:
+        mase_m_val, mase_m_status = _compute_mase(
+            mae, training_series, candidate_seasonal_period
+        )
+    else:
+        mase_m_val = np.nan
+        mase_m_status = "undefined: no candidate seasonal period provided"
 
     return {
         "mae": mae,
         "rmse": rmse,
         "wape": wape_val,
         "bias": bias,
-        "mase": mase_val,
+        "mase_lag1": mase_lag1_val,
+        "mase_m": mase_m_val,
         "wape_status": wape_status,
-        "mase_status": mase_status,
+        "mase_lag1_status": mase_lag1_status,
+        "mase_m_status": mase_m_status,
         "n_eval": len(a),
     }
 
@@ -179,10 +205,8 @@ def _compute_mase(
 
         mean(|y[t] - y[t - m]|)  for t = m, m+1, …, T_train
 
-    where *m* is ``seasonal_period``.  This is the expected error a seasonal
-    naive model would make on one-step-ahead predictions within the training
-    window.  MASE < 1 means the model beats seasonal naive on the test window
-    relative to how well seasonal naive fits the training data.
+    where *m* is ``seasonal_period``.  When ``seasonal_period=1`` this
+    reduces to the random-walk (lag-1) in-sample error.
     """
     if training_series is None:
         return np.nan, "undefined: no training series provided"

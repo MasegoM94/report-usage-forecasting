@@ -37,7 +37,7 @@ def _row(
     mae: float = 1.0,
     rmse: float = 1.2,
     wape: float = 0.3,
-    mase: float = 0.8,
+    mase_lag1: float = 0.8,
     bias: float = 0.1,
     interval_coverage: float = np.nan,
     mean_interval_width: float = np.nan,
@@ -52,7 +52,7 @@ def _row(
         "mae": mae,
         "rmse": rmse,
         "wape": wape,
-        "mase": mase,
+        "mase_lag1": mase_lag1,
         "bias": bias,
         "interval_coverage": interval_coverage,
         "mean_interval_width": mean_interval_width,
@@ -76,12 +76,12 @@ class TestCompleteModelResults:
     def fm(self):
         # 3 folds × 2 models; naive wins fold 1, snaive wins folds 2 and 3
         return _make([
-            _row(fold_number=1, model_name="naive",          mase=0.70),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.80),
-            _row(fold_number=2, model_name="naive",          mase=0.90),
-            _row(fold_number=2, model_name="seasonal_naive", mase=0.75),
-            _row(fold_number=3, model_name="naive",          mase=0.85),
-            _row(fold_number=3, model_name="seasonal_naive", mase=0.72),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.70),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.80),
+            _row(fold_number=2, model_name="naive",          mase_lag1=0.90),
+            _row(fold_number=2, model_name="seasonal_naive", mase_lag1=0.75),
+            _row(fold_number=3, model_name="naive",          mase_lag1=0.85),
+            _row(fold_number=3, model_name="seasonal_naive", mase_lag1=0.72),
         ])
 
     def test_one_row_per_model(self, fm):
@@ -112,7 +112,7 @@ class TestCompleteModelResults:
         result = summarise_model_performance(fm, min_valid_folds=1)
         naive = result.loc[result["model_name"] == "naive", "fold_win_count"].iloc[0]
         snaive = result.loc[result["model_name"] == "seasonal_naive", "fold_win_count"].iloc[0]
-        assert naive == 1    # wins fold 1 (mase=0.70 < 0.80)
+        assert naive == 1    # wins fold 1 (mase_lag1=0.70 < 0.80)
         assert snaive == 2   # wins folds 2 and 3
 
     def test_fold_win_rate(self, fm):
@@ -122,9 +122,9 @@ class TestCompleteModelResults:
         assert naive_rate == pytest.approx(1 / 3)
         assert snaive_rate == pytest.approx(2 / 3)
 
-    def test_sorted_by_mean_mase_ascending(self, fm):
+    def test_sorted_by_mean_mase_lag1_ascending(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=1)
-        mases = result["mean_mase"].tolist()
+        mases = result["mean_mase_lag1"].tolist()
         assert mases == sorted(mases)
 
 
@@ -138,14 +138,14 @@ class TestOneFailedFold:
         # naive: fold 1 ok, fold 2 ok, fold 3 failed
         # snaive: all ok
         return _make([
-            _row(fold_number=1, model_name="naive",          mase=0.80),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.75),
-            _row(fold_number=2, model_name="naive",          mase=0.70),
-            _row(fold_number=2, model_name="seasonal_naive", mase=0.72),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.80),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.75),
+            _row(fold_number=2, model_name="naive",          mase_lag1=0.70),
+            _row(fold_number=2, model_name="seasonal_naive", mase_lag1=0.72),
             _row(fold_number=3, model_name="naive",
-                 mase=np.nan, mae=np.nan, rmse=np.nan, wape=np.nan, bias=np.nan,
+                 mase_lag1=np.nan, mae=np.nan, rmse=np.nan, wape=np.nan, bias=np.nan,
                  fit_status="failed", error_message="RuntimeError: oops"),
-            _row(fold_number=3, model_name="seasonal_naive", mase=0.78),
+            _row(fold_number=3, model_name="seasonal_naive", mase_lag1=0.78),
         ])
 
     def test_failed_fold_counted(self, fm):
@@ -163,9 +163,9 @@ class TestOneFailedFold:
     def test_failed_fold_excluded_from_aggregates(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=1)
         naive = result.loc[result["model_name"] == "naive"].iloc[0]
-        # mean_mase should be computed only over folds 1 and 2
+        # mean_mase_lag1 should be computed only over folds 1 and 2
         expected = np.mean([0.80, 0.70])
-        assert naive["mean_mase"] == pytest.approx(expected)
+        assert naive["mean_mase_lag1"] == pytest.approx(expected)
 
     def test_failed_model_not_eligible_for_fold_win(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=1)
@@ -191,18 +191,18 @@ class TestInsufficientValidFolds:
     def fm(self):
         # naive: only 2 valid folds; snaive: 4 valid folds
         return _make([
-            _row(fold_number=1, model_name="naive",          mase=0.80),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.75),
-            _row(fold_number=2, model_name="naive",          mase=0.70),
-            _row(fold_number=2, model_name="seasonal_naive", mase=0.72),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.80),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.75),
+            _row(fold_number=2, model_name="naive",          mase_lag1=0.70),
+            _row(fold_number=2, model_name="seasonal_naive", mase_lag1=0.72),
             _row(fold_number=3, model_name="naive",
-                 mase=np.nan, fit_status="failed", mae=np.nan, rmse=np.nan,
+                 mase_lag1=np.nan, fit_status="failed", mae=np.nan, rmse=np.nan,
                  wape=np.nan, bias=np.nan),
-            _row(fold_number=3, model_name="seasonal_naive", mase=0.78),
+            _row(fold_number=3, model_name="seasonal_naive", mase_lag1=0.78),
             _row(fold_number=4, model_name="naive",
-                 mase=np.nan, fit_status="failed", mae=np.nan, rmse=np.nan,
+                 mase_lag1=np.nan, fit_status="failed", mae=np.nan, rmse=np.nan,
                  wape=np.nan, bias=np.nan),
-            _row(fold_number=4, model_name="seasonal_naive", mase=0.81),
+            _row(fold_number=4, model_name="seasonal_naive", mase_lag1=0.81),
         ])
 
     def test_insufficient_flagged(self, fm):
@@ -219,8 +219,8 @@ class TestInsufficientValidFolds:
         """Aggregates are still computed for the available valid folds."""
         result = summarise_model_performance(fm, min_valid_folds=3)
         naive = result.loc[result["model_name"] == "naive"].iloc[0]
-        assert pd.notna(naive["mean_mase"])
-        assert naive["mean_mase"] == pytest.approx(np.mean([0.80, 0.70]))
+        assert pd.notna(naive["mean_mase_lag1"])
+        assert naive["mean_mase_lag1"] == pytest.approx(np.mean([0.80, 0.70]))
 
     def test_both_models_present_in_output(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=3)
@@ -240,10 +240,10 @@ class TestTiedFoldWinners:
         # Fold 2: naive=0.900, snaive=0.700 → snaive clear winner
         delta = MASE_TIE_TOLERANCE / 2
         return _make([
-            _row(fold_number=1, model_name="naive",          mase=0.800),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.800 + delta),
-            _row(fold_number=2, model_name="naive",          mase=0.900),
-            _row(fold_number=2, model_name="seasonal_naive", mase=0.700),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.800),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.800 + delta),
+            _row(fold_number=2, model_name="naive",          mase_lag1=0.900),
+            _row(fold_number=2, model_name="seasonal_naive", mase_lag1=0.700),
         ])
 
     def test_tied_fold_both_credited(self, fm):
@@ -258,8 +258,8 @@ class TestTiedFoldWinners:
         """A MASE difference just above tolerance does NOT constitute a tie."""
         delta = MASE_TIE_TOLERANCE * 1.5   # > tolerance
         fm = _make([
-            _row(fold_number=1, model_name="naive",          mase=0.800),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.800 + delta),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.800),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.800 + delta),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
         naive_wins = result.loc[result["model_name"] == "naive", "fold_win_count"].iloc[0]
@@ -271,10 +271,10 @@ class TestTiedFoldWinners:
         """When every fold is tied, both models have fold_win_rate = 1.0."""
         delta = MASE_TIE_TOLERANCE / 3
         fm = _make([
-            _row(fold_number=1, model_name="naive",          mase=0.8),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.8 + delta),
-            _row(fold_number=2, model_name="naive",          mase=0.7),
-            _row(fold_number=2, model_name="seasonal_naive", mase=0.7 + delta),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.8),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.8 + delta),
+            _row(fold_number=2, model_name="naive",          mase_lag1=0.7),
+            _row(fold_number=2, model_name="seasonal_naive", mase_lag1=0.7 + delta),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
         assert all(abs(v - 1.0) < 1e-9 for v in result["fold_win_rate"])
@@ -294,25 +294,25 @@ class TestAggregateCalculations:
         bias_vals = [-1.0, 0.5, 0.0, 1.5, -0.5]
         return _make([
             _row(fold_number=i + 1, model_name="naive",
-                 mase=mase_vals[i], mae=mae_vals[i],
+                 mase_lag1=mase_vals[i], mae=mae_vals[i],
                  wape=wape_vals[i], bias=bias_vals[i])
             for i in range(5)
         ])
 
-    def test_mean_mase(self, fm):
+    def test_mean_mase_lag1(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=1)
         row = result.loc[result["model_name"] == "naive"].iloc[0]
-        assert row["mean_mase"] == pytest.approx(np.mean([0.5, 0.7, 0.9, 1.1, 1.3]))
+        assert row["mean_mase_lag1"] == pytest.approx(np.mean([0.5, 0.7, 0.9, 1.1, 1.3]))
 
-    def test_median_mase(self, fm):
+    def test_median_mase_lag1(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=1)
         row = result.loc[result["model_name"] == "naive"].iloc[0]
-        assert row["median_mase"] == pytest.approx(np.median([0.5, 0.7, 0.9, 1.1, 1.3]))
+        assert row["median_mase_lag1"] == pytest.approx(np.median([0.5, 0.7, 0.9, 1.1, 1.3]))
 
-    def test_mase_std(self, fm):
+    def test_mase_lag1_std(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=1)
         row = result.loc[result["model_name"] == "naive"].iloc[0]
-        assert row["mase_std"] == pytest.approx(np.std([0.5, 0.7, 0.9, 1.1, 1.3], ddof=1))
+        assert row["mase_lag1_std"] == pytest.approx(np.std([0.5, 0.7, 0.9, 1.1, 1.3], ddof=1))
 
     def test_mean_mae(self, fm):
         result = summarise_model_performance(fm, min_valid_folds=1)
@@ -353,14 +353,14 @@ class TestFoldWinRates:
     def test_rate_is_wins_over_valid_folds(self):
         # naive wins 2 of 4 valid folds → rate = 0.5
         fm = _make([
-            _row(fold_number=1, model_name="naive",          mase=0.60),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.80),
-            _row(fold_number=2, model_name="naive",          mase=0.90),
-            _row(fold_number=2, model_name="seasonal_naive", mase=0.70),
-            _row(fold_number=3, model_name="naive",          mase=0.55),
-            _row(fold_number=3, model_name="seasonal_naive", mase=0.80),
-            _row(fold_number=4, model_name="naive",          mase=0.95),
-            _row(fold_number=4, model_name="seasonal_naive", mase=0.65),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.60),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.80),
+            _row(fold_number=2, model_name="naive",          mase_lag1=0.90),
+            _row(fold_number=2, model_name="seasonal_naive", mase_lag1=0.70),
+            _row(fold_number=3, model_name="naive",          mase_lag1=0.55),
+            _row(fold_number=3, model_name="seasonal_naive", mase_lag1=0.80),
+            _row(fold_number=4, model_name="naive",          mase_lag1=0.95),
+            _row(fold_number=4, model_name="seasonal_naive", mase_lag1=0.65),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
         naive = result.loc[result["model_name"] == "naive"].iloc[0]
@@ -374,7 +374,7 @@ class TestFoldWinRates:
         """A model with zero valid folds should have fold_win_rate = NaN."""
         fm = _make([
             _row(fold_number=1, model_name="always_fails",
-                 mase=np.nan, fit_status="failed",
+                 mase_lag1=np.nan, fit_status="failed",
                  mae=np.nan, rmse=np.nan, wape=np.nan, bias=np.nan),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
@@ -384,7 +384,7 @@ class TestFoldWinRates:
     def test_win_count_zero_when_no_valid_folds(self):
         fm = _make([
             _row(fold_number=1, model_name="always_fails",
-                 mase=np.nan, fit_status="failed",
+                 mase_lag1=np.nan, fit_status="failed",
                  mae=np.nan, rmse=np.nan, wape=np.nan, bias=np.nan),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
@@ -396,14 +396,14 @@ class TestFoldWinRates:
         # naive: 3 folds total, 1 failed → 2 valid; wins 1
         # → rate should be 1/2, not 1/3
         fm = _make([
-            _row(fold_number=1, model_name="naive",          mase=0.60),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.80),
-            _row(fold_number=2, model_name="naive",          mase=0.90),
-            _row(fold_number=2, model_name="seasonal_naive", mase=0.70),
+            _row(fold_number=1, model_name="naive",          mase_lag1=0.60),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.80),
+            _row(fold_number=2, model_name="naive",          mase_lag1=0.90),
+            _row(fold_number=2, model_name="seasonal_naive", mase_lag1=0.70),
             _row(fold_number=3, model_name="naive",
-                 mase=np.nan, fit_status="failed",
+                 mase_lag1=np.nan, fit_status="failed",
                  mae=np.nan, rmse=np.nan, wape=np.nan, bias=np.nan),
-            _row(fold_number=3, model_name="seasonal_naive", mase=0.65),
+            _row(fold_number=3, model_name="seasonal_naive", mase_lag1=0.65),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
         naive = result.loc[result["model_name"] == "naive"].iloc[0]
@@ -418,11 +418,11 @@ class TestIntervalCoverageAggregation:
     def test_mean_coverage_averaged_over_valid_folds(self):
         fm = _make([
             _row(fold_number=1, model_name="sarima",
-                 mase=0.70, interval_coverage=0.90, mean_interval_width=5.0),
+                 mase_lag1=0.70, interval_coverage=0.90, mean_interval_width=5.0),
             _row(fold_number=2, model_name="sarima",
-                 mase=0.75, interval_coverage=0.95, mean_interval_width=6.0),
+                 mase_lag1=0.75, interval_coverage=0.95, mean_interval_width=6.0),
             _row(fold_number=3, model_name="sarima",
-                 mase=0.80, interval_coverage=0.88, mean_interval_width=4.5),
+                 mase_lag1=0.80, interval_coverage=0.88, mean_interval_width=4.5),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
         row = result.iloc[0]
@@ -431,8 +431,8 @@ class TestIntervalCoverageAggregation:
 
     def test_baseline_nan_coverage_stays_nan(self):
         fm = _make([
-            _row(fold_number=1, mase=0.70, interval_coverage=np.nan, mean_interval_width=np.nan),
-            _row(fold_number=2, mase=0.75, interval_coverage=np.nan, mean_interval_width=np.nan),
+            _row(fold_number=1, mase_lag1=0.70, interval_coverage=np.nan, mean_interval_width=np.nan),
+            _row(fold_number=2, mase_lag1=0.75, interval_coverage=np.nan, mean_interval_width=np.nan),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
         assert pd.isna(result["mean_interval_coverage"].iloc[0])
@@ -453,9 +453,9 @@ class TestMultiReport:
         ]:
             for fold in range(1, 4):
                 rows.append(_row(report_id=report_id, fold_number=fold,
-                                 model_name="naive", mase=mase_a))
+                                 model_name="naive", mase_lag1=mase_a))
                 rows.append(_row(report_id=report_id, fold_number=fold,
-                                 model_name="seasonal_naive", mase=mase_b))
+                                 model_name="seasonal_naive", mase_lag1=mase_b))
         return _make(rows)
 
     def test_two_rows_per_report(self, fm):
@@ -479,7 +479,7 @@ class TestMultiReport:
 
 class TestInputValidation:
     def test_missing_required_column_raises(self):
-        fm = _make([_row()]).drop(columns=["mase"])
+        fm = _make([_row()]).drop(columns=["mase_lag1"])
         with pytest.raises(ValueError, match="missing required columns"):
             summarise_model_performance(fm)
 
@@ -490,7 +490,7 @@ class TestInputValidation:
         assert list(result.columns) == _OUTPUT_COLS
 
     def test_single_model_single_fold(self):
-        fm = _make([_row(mase=0.85)])
+        fm = _make([_row(mase_lag1=0.85)])
         result = summarise_model_performance(fm, min_valid_folds=1)
         assert len(result) == 1
         assert result.iloc[0]["valid_folds"] == 1
@@ -499,7 +499,7 @@ class TestInputValidation:
 
     def test_all_folds_failed_produces_row_with_nan_metrics(self):
         fm = _make([
-            _row(fold_number=i, mase=np.nan, fit_status="failed",
+            _row(fold_number=i, mase_lag1=np.nan, fit_status="failed",
                  mae=np.nan, rmse=np.nan, wape=np.nan, bias=np.nan)
             for i in range(1, 4)
         ])
@@ -508,27 +508,27 @@ class TestInputValidation:
         row = result.iloc[0]
         assert row["failed_folds"] == 3
         assert row["valid_folds"] == 0
-        assert pd.isna(row["mean_mase"])
+        assert pd.isna(row["mean_mase_lag1"])
         assert row["fold_win_count"] == 0
         assert pd.isna(row["fold_win_rate"])
         assert not row["has_sufficient_folds"]
 
-    def test_output_sorted_by_mean_mase_ascending(self):
+    def test_output_sorted_by_mean_mase_lag1_ascending(self):
         fm = _make([
-            _row(fold_number=1, model_name="naive",          mase=1.2),
-            _row(fold_number=1, model_name="seasonal_naive", mase=0.6),
-            _row(fold_number=1, model_name="moving_average", mase=0.9),
+            _row(fold_number=1, model_name="naive",          mase_lag1=1.2),
+            _row(fold_number=1, model_name="seasonal_naive", mase_lag1=0.6),
+            _row(fold_number=1, model_name="moving_average", mase_lag1=0.9),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
-        mases = result["mean_mase"].tolist()
+        mases = result["mean_mase_lag1"].tolist()
         assert mases == sorted(mases)
         assert result.iloc[0]["model_name"] == "seasonal_naive"
 
-    def test_nan_mean_mase_sorted_last(self):
+    def test_nan_mean_mase_lag1_sorted_last(self):
         fm = _make([
-            _row(fold_number=1, model_name="good_model",   mase=0.80),
+            _row(fold_number=1, model_name="good_model",   mase_lag1=0.80),
             _row(fold_number=1, model_name="failed_model",
-                 mase=np.nan, fit_status="failed",
+                 mase_lag1=np.nan, fit_status="failed",
                  mae=np.nan, rmse=np.nan, wape=np.nan, bias=np.nan),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
@@ -538,8 +538,8 @@ class TestInputValidation:
         """A fold where fit succeeded but MASE is NaN (e.g. zero denominator)
         must not be counted in valid_folds."""
         fm = _make([
-            _row(fold_number=1, model_name="naive", mase=0.80),
-            _row(fold_number=2, model_name="naive", mase=np.nan, fit_status="ok"),
+            _row(fold_number=1, model_name="naive", mase_lag1=0.80),
+            _row(fold_number=2, model_name="naive", mase_lag1=np.nan, fit_status="ok"),
         ])
         result = summarise_model_performance(fm, min_valid_folds=1)
         row = result.iloc[0]

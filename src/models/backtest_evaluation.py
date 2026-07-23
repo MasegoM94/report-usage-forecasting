@@ -114,7 +114,7 @@ _PRED_COLS = [
 _METRIC_COLS = [
     "report_id", "fold_number", "cutoff_date",
     "model_name",
-    "mae", "rmse", "wape", "mase", "bias",
+    "mae", "rmse", "wape", "mase_lag1", "mase_m", "bias",
     "interval_coverage", "mean_interval_width",
     "fit_status", "error_message",
 ]
@@ -151,7 +151,7 @@ _METRIC_COLS_EXT = [
     "seasonal_candidate_rank", "cycles_available",
     "autocorrelation_at_m", "spectral_power_at_m",
     "seasonality_status", "candidate_source",
-    "mae", "rmse", "wape", "mase", "bias",
+    "mae", "rmse", "wape", "mase_lag1", "mase_m", "bias",
     "interval_coverage", "mean_interval_width",
     "fit_status", "error_message",
 ]
@@ -301,11 +301,17 @@ def _build_metric_row(
     fold: ForecastFold,
     result: ModelResult,
     predictions: list[dict],
-    seasonal_period: int,
+    candidate_seasonal_period: Optional[int] = None,
 ) -> dict:
     """Return one fold-level metric dict for a single (fold, model) pair.
 
-    MASE denominator is computed exclusively from the fold's training series.
+    ``mase_lag1`` uses a lag-1 random-walk denominator computed exclusively
+    from the fold's training series.  All candidates within the same fold share
+    this denominator, so their scores are directly comparable.
+
+    ``mase_m`` uses ``candidate_seasonal_period`` as the denominator and is
+    a per-candidate diagnostic; pass ``None`` to omit it.
+
     Interval metrics are only computed when both bounds are present and the
     model did not fail.
     """
@@ -321,7 +327,7 @@ def _build_metric_row(
         return {
             **base,
             "mae": np.nan, "rmse": np.nan, "wape": np.nan,
-            "mase": np.nan, "bias": np.nan,
+            "mase_lag1": np.nan, "mase_m": np.nan, "bias": np.nan,
             "interval_coverage": np.nan, "mean_interval_width": np.nan,
             "fit_status": "failed",
         }
@@ -335,7 +341,7 @@ def _build_metric_row(
         actual_arr,
         forecast_arr,
         training_series=fold.train_series.to_numpy(),
-        seasonal_period=seasonal_period,
+        candidate_seasonal_period=candidate_seasonal_period,
     )
 
     # Interval metrics only when the model produced bounds
@@ -359,7 +365,8 @@ def _build_metric_row(
         "mae": pt["mae"],
         "rmse": pt["rmse"],
         "wape": pt["wape"],
-        "mase": pt["mase"],
+        "mase_lag1": pt["mase_lag1"],
+        "mase_m": pt["mase_m"],
         "bias": pt["bias"],
         "interval_coverage": interval_coverage,
         "mean_interval_width": mean_interval_width,
@@ -452,7 +459,7 @@ def evaluate_models_across_folds(
 
             pred_rows = _build_prediction_rows(report_id, fold, result)
             metric_row = _build_metric_row(
-                report_id, fold, result, pred_rows, cfg.seasonal_period
+                report_id, fold, result, pred_rows
             )
 
             all_pred_rows.extend(pred_rows)
@@ -636,9 +643,10 @@ def evaluate_candidates_across_folds(
     4. Annotates every row with seasonality-metadata columns (``model_family``,
        ``candidate_m``, ``seasonal_candidate_rank``, etc.).
 
-    MASE is computed with ``seasonal_period = candidate_m`` for each
-    candidate, so the denominator baseline matches the candidate's own
-    seasonal assumption.
+    ``mase_lag1`` uses a lag-1 random-walk denominator shared by all
+    candidates in the same fold, ensuring cross-candidate comparability.
+    ``mase_m`` uses each candidate's own period as the denominator and
+    is carried as a diagnostic column only.
 
     Parameters
     ----------
@@ -727,12 +735,12 @@ def evaluate_candidates_across_folds(
             except Exception as exc:
                 result = _make_failed_result(spec.model_name, exc)
 
-            # Use candidate_m as the MASE denominator so each model is
-            # measured against its own seasonal-naive baseline.
+            # Pass candidate_m so mase_m (diagnostic) is computed for each
+            # candidate.  mase_lag1 always uses lag-1 regardless of this value.
             pred_rows = _build_prediction_rows(report_id, fold, result)
             metric_row = _build_metric_row(
                 report_id, fold, result, pred_rows,
-                seasonal_period=spec.candidate_m,
+                candidate_seasonal_period=spec.candidate_m,
             )
 
             for row in pred_rows:

@@ -93,7 +93,7 @@ MODEL_COMPLEXITY: dict[str, int] = {
 _REQUIRED_INPUT_COLS = {
     "report_id", "model_name",
     "has_sufficient_folds", "valid_folds", "failed_folds",
-    "median_mase", "mean_mase", "mean_wape", "mean_mae",
+    "median_mase_lag1", "mean_mase_lag1", "mean_wape", "mean_mae",
     "mean_bias", "absolute_mean_bias",
     "fold_win_count", "fold_win_rate",
 }
@@ -104,7 +104,7 @@ _OUTPUT_COLS = [
     "selection_status",
     "selection_reason",
     "valid_folds",
-    "median_mase",
+    "median_mase_lag1",
     "mean_wape",
     "mean_bias",
     "fold_win_rate",
@@ -118,7 +118,14 @@ _OUTPUT_COLS = [
 # ---------------------------------------------------------------------------
 
 def _complexity(name: str) -> int:
-    return MODEL_COMPLEXITY.get(name, 99)
+    # Exact match first (e.g. "naive"), then prefix match for m-encoded names
+    # (e.g. "seasonal_naive_m7" → family "seasonal_naive" → rank 1).
+    if name in MODEL_COMPLEXITY:
+        return MODEL_COMPLEXITY[name]
+    for family, rank in MODEL_COMPLEXITY.items():
+        if name.startswith(f"{family}_"):
+            return rank
+    return 99
 
 
 def _improvement_pct(baseline_mase: float, candidate_mase: float) -> float:
@@ -145,7 +152,7 @@ def _no_model_row(
         "selection_status": "no_reliable_model",
         "selection_reason": reason,
         "valid_folds": np.nan,
-        "median_mase": np.nan,
+        "median_mase_lag1": np.nan,
         "mean_wape": np.nan,
         "mean_bias": np.nan,
         "fold_win_rate": np.nan,
@@ -160,14 +167,14 @@ def _selected_row(
     reason: str,
     seasonal_naive_mase: float,
 ) -> dict:
-    candidate_mase = selected["median_mase"]
+    candidate_mase = selected["median_mase_lag1"]
     return {
         "report_id": report_id,
         "selected_model": selected["model_name"],
         "selection_status": "selected",
         "selection_reason": reason,
         "valid_folds": int(selected["valid_folds"]),
-        "median_mase": candidate_mase,
+        "median_mase_lag1": candidate_mase,
         "mean_wape": selected.get("mean_wape", np.nan),
         "mean_bias": selected.get("mean_bias", np.nan),
         "fold_win_rate": selected.get("fold_win_rate", np.nan),
@@ -186,9 +193,17 @@ def _select_for_report(
     report_id: str = report_df["report_id"].iloc[0]
 
     # --- Seasonal naive benchmark (always extracted, regardless of eligibility) ---
-    sn_rows = report_df[report_df["model_name"] == SEASONAL_NAIVE_NAME]
-    if not sn_rows.empty and pd.notna(sn_rows["median_mase"].iloc[0]):
-        seasonal_naive_mase: float = float(sn_rows["median_mase"].iloc[0])
+    # Accept both old "seasonal_naive" and new m-encoded "seasonal_naive_m7" names.
+    sn_rows = report_df[report_df["model_name"].str.startswith("seasonal_naive")]
+    if not sn_rows.empty:
+        # Pick the seasonal naive with the lowest median_mase_lag1 as the benchmark
+        sn_valid = sn_rows.dropna(subset=["median_mase_lag1"])
+        if not sn_valid.empty:
+            seasonal_naive_mase: float = float(
+                sn_valid.loc[sn_valid["median_mase_lag1"].idxmin(), "median_mase_lag1"]
+            )
+        else:
+            seasonal_naive_mase = np.nan
     else:
         seasonal_naive_mase = np.nan
 
@@ -226,8 +241,8 @@ def _select_for_report(
             seasonal_naive_mase=seasonal_naive_mase,
         )
 
-    # --- 3. Drop models without a finite median MASE, rank remaining ---
-    eligible = eligible.dropna(subset=["median_mase"]).copy()
+    # --- 3. Drop models without a finite median_mase_lag1, rank remaining ---
+    eligible = eligible.dropna(subset=["median_mase_lag1"]).copy()
 
     if eligible.empty:
         return _no_model_row(
@@ -236,20 +251,20 @@ def _select_for_report(
             seasonal_naive_mase=seasonal_naive_mase,
         )
 
-    eligible = eligible.sort_values("median_mase", ignore_index=True)
-    best_mase: float = float(eligible["median_mase"].iloc[0])
+    eligible = eligible.sort_values("median_mase_lag1", ignore_index=True)
+    best_mase: float = float(eligible["median_mase_lag1"].iloc[0])
     absolute_best_name: str = eligible["model_name"].iloc[0]
 
     # --- 4. Build practical tie group (within relative tolerance of best) ---
     tie_threshold = best_mase * (1.0 + rel_tol)
-    tie_group = eligible[eligible["median_mase"] <= tie_threshold].copy()
+    tie_group = eligible[eligible["median_mase_lag1"] <= tie_threshold].copy()
 
     # --- 5. Prefer the simplest model within the tie group ---
     tie_group["_cplx"] = tie_group["model_name"].map(_complexity)
-    tie_group = tie_group.sort_values(["_cplx", "median_mase"], ignore_index=True)
+    tie_group = tie_group.sort_values(["_cplx", "median_mase_lag1"], ignore_index=True)
     selected: pd.Series = tie_group.iloc[0]
     selected_name: str = selected["model_name"]
-    selected_mase: float = float(selected["median_mase"])
+    selected_mase: float = float(selected["median_mase_lag1"])
 
     tie_triggered: bool = selected_name != absolute_best_name
 
@@ -269,7 +284,7 @@ def _select_for_report(
             f"({improvement:.1f}%) was below the {tol_pct:.1f}% tolerance"
             f"{bias_note}."
         )
-    elif selected_name == SEASONAL_NAIVE_NAME:
+    elif selected_name.startswith("seasonal_naive"):
         reason = (
             f"Seasonal naive selected: lowest median MASE ({selected_mase:.3f}) "
             f"among eligible models{bias_note}."

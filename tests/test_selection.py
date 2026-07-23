@@ -32,8 +32,8 @@ def _row(
     has_sufficient_folds: bool = True,
     valid_folds: int = 4,
     failed_folds: int = 0,
-    median_mase: float = 0.80,
-    mean_mase: float = 0.82,
+    median_mase_lag1: float = 0.80,
+    mean_mase_lag1: float = 0.82,
     mean_wape: float = 0.30,
     mean_mae: float = 10.0,
     mean_rmse: float = 12.0,
@@ -41,7 +41,7 @@ def _row(
     absolute_mean_bias: float = 0.5,
     fold_win_count: int = 2,
     fold_win_rate: float = 0.5,
-    mase_std: float = 0.05,
+    mase_lag1_std: float = 0.05,
     mean_interval_coverage: float = np.nan,
     mean_interval_width: float = np.nan,
 ) -> dict:
@@ -51,9 +51,9 @@ def _row(
         "has_sufficient_folds": has_sufficient_folds,
         "valid_folds": valid_folds,
         "failed_folds": failed_folds,
-        "median_mase": median_mase,
-        "mean_mase": mean_mase,
-        "mase_std": mase_std,
+        "median_mase_lag1": median_mase_lag1,
+        "mean_mase_lag1": mean_mase_lag1,
+        "mase_lag1_std": mase_lag1_std,
         "mean_wape": mean_wape,
         "mean_mae": mean_mae,
         "mean_rmse": mean_rmse,
@@ -82,8 +82,8 @@ class TestClearComplexWinner:
         sn_mase = 1.00
         arima_mase = 0.75    # 25 % improvement — well above 5 % tolerance
         return _make(
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=sn_mase, fold_win_count=1),
-            _row(model_name="auto_arima",        median_mase=arima_mase, fold_win_count=3),
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=sn_mase, fold_win_count=1),
+            _row(model_name="auto_arima",        median_mase_lag1=arima_mase, fold_win_count=3),
         )
 
     def test_auto_arima_selected(self, fm):
@@ -132,9 +132,9 @@ class TestNegligibleImprovement:
         sn_mase = 1.00
         arima_mase = sn_mase * (1 - 0.03)   # 3 % — below 5 % tolerance
         return _make(
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=sn_mase,
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=sn_mase,
                  mean_mae=10.0, mean_bias=0.0, absolute_mean_bias=0.0),
-            _row(model_name="auto_arima",        median_mase=arima_mase,
+            _row(model_name="auto_arima",        median_mase_lag1=arima_mase,
                  mean_mae=9.7, mean_bias=0.1, absolute_mean_bias=0.1),
         )
 
@@ -178,9 +178,9 @@ class TestPracticalTieSimplestWins:
         sn_mase = 0.90
         ets_mase = sn_mase * (1 - RELATIVE_IMPROVEMENT_TOLERANCE / 2)   # halfway inside
         return _make(
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=sn_mase,
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=sn_mase,
                  mean_mae=10.0, mean_bias=0.0, absolute_mean_bias=0.0),
-            _row(model_name="ets",               median_mase=ets_mase,
+            _row(model_name="ets",               median_mase_lag1=ets_mase,
                  mean_mae=9.6, mean_bias=0.2, absolute_mean_bias=0.2),
         )
 
@@ -197,9 +197,9 @@ class TestPracticalTieSimplestWins:
         base_mase = 1.0
         delta = RELATIVE_IMPROVEMENT_TOLERANCE / 4   # all within tolerance
         fm = _make(
-            _row(model_name="moving_average",    median_mase=base_mase),
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=base_mase * (1 + delta)),
-            _row(model_name="naive",             median_mase=base_mase * (1 + 2 * delta)),
+            _row(model_name="moving_average",    median_mase_lag1=base_mase),
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=base_mase * (1 + delta)),
+            _row(model_name="naive",             median_mase_lag1=base_mase * (1 + 2 * delta)),
         )
         result = select_models(fm, max_bias_ratio=None)
         assert result.iloc[0]["selected_model"] == "naive"
@@ -221,9 +221,9 @@ class TestBiasGuardrail:
     @pytest.fixture
     def fm(self):
         return _make(
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=0.90,
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.90,
                  mean_mae=10.0, mean_bias=0.5, absolute_mean_bias=0.5),   # ratio 0.05 — passes
-            _row(model_name="auto_arima",        median_mase=0.70,
+            _row(model_name="auto_arima",        median_mase_lag1=0.70,
                  mean_mae=10.0, mean_bias=6.0, absolute_mean_bias=6.0),   # ratio 0.60 — fails
         )
 
@@ -243,9 +243,9 @@ class TestBiasGuardrail:
 
     def test_all_models_biased_gives_no_reliable_model(self):
         fm = _make(
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=0.90,
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.90,
                  mean_mae=10.0, mean_bias=8.0, absolute_mean_bias=8.0),   # ratio 0.80
-            _row(model_name="naive",             median_mase=0.80,
+            _row(model_name="naive",             median_mase_lag1=0.80,
                  mean_mae=10.0, mean_bias=9.0, absolute_mean_bias=9.0),   # ratio 0.90
         )
         result = select_models(fm, max_bias_ratio=0.5)
@@ -253,7 +253,7 @@ class TestBiasGuardrail:
 
     def test_no_model_reason_names_excluded_models(self):
         fm = _make(
-            _row(model_name="auto_arima", median_mase=0.80,
+            _row(model_name="auto_arima", median_mase_lag1=0.80,
                  mean_mae=10.0, mean_bias=8.0, absolute_mean_bias=8.0),
         )
         result = select_models(fm, max_bias_ratio=0.5)
@@ -286,9 +286,9 @@ class TestInsufficientFolds:
         """Only models with sufficient folds are candidates; others are ignored."""
         fm = _make(
             _row(model_name="naive",             has_sufficient_folds=False,
-                 valid_folds=1, median_mase=0.50),
+                 valid_folds=1, median_mase_lag1=0.50),
             _row(model_name=SEASONAL_NAIVE_NAME, has_sufficient_folds=True,
-                 valid_folds=4, median_mase=0.90),
+                 valid_folds=4, median_mase_lag1=0.90),
         )
         result = select_models(fm, max_bias_ratio=None)
         # naive has better MASE but insufficient folds — seasonal naive should win
@@ -298,9 +298,9 @@ class TestInsufficientFolds:
         """Benchmark column reflects the seasonal naive MASE even if it was excluded."""
         fm = _make(
             _row(model_name=SEASONAL_NAIVE_NAME, has_sufficient_folds=False,
-                 valid_folds=1, median_mase=0.95),
+                 valid_folds=1, median_mase_lag1=0.95),
             _row(model_name="naive",             has_sufficient_folds=True,
-                 valid_folds=4, median_mase=0.80),
+                 valid_folds=4, median_mase_lag1=0.80),
         )
         result = select_models(fm, max_bias_ratio=None)
         assert result.iloc[0]["seasonal_naive_median_mase"] == pytest.approx(0.95)
@@ -314,15 +314,15 @@ class TestAllModelsFailed:
     def test_no_reliable_model_when_all_failed(self):
         fm = _make(
             _row(model_name="naive",          has_sufficient_folds=False,
-                 valid_folds=0, median_mase=np.nan),
+                 valid_folds=0, median_mase_lag1=np.nan),
             _row(model_name=SEASONAL_NAIVE_NAME, has_sufficient_folds=False,
-                 valid_folds=0, median_mase=np.nan),
+                 valid_folds=0, median_mase_lag1=np.nan),
         )
         result = select_models(fm)
         row = result.iloc[0]
         assert row["selection_status"] == "no_reliable_model"
         assert row["selected_model"] is None
-        assert pd.isna(row["median_mase"])
+        assert pd.isna(row["median_mase_lag1"])
 
     def test_empty_summary_returns_empty_result(self):
         empty = pd.DataFrame(columns=list(_make(_row()).columns))
@@ -340,8 +340,8 @@ class TestMissingSeasonalNaive:
     def fm(self):
         # Only naive and auto_arima — no seasonal_naive in the portfolio
         return _make(
-            _row(model_name="naive",      median_mase=1.10, fold_win_count=1),
-            _row(model_name="auto_arima", median_mase=0.75, fold_win_count=3),
+            _row(model_name="naive",      median_mase_lag1=1.10, fold_win_count=1),
+            _row(model_name="auto_arima", median_mase_lag1=0.75, fold_win_count=3),
         )
 
     def test_auto_arima_still_selected(self, fm):
@@ -371,9 +371,9 @@ class TestDeterministicReason:
 
     def test_reason_is_deterministic(self):
         fm = _make(
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=1.00,
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=1.00,
                  mean_mae=10.0, mean_bias=0.0, absolute_mean_bias=0.0),
-            _row(model_name="ets",               median_mase=0.72,
+            _row(model_name="ets",               median_mase_lag1=0.72,
                  mean_mae=9.0, mean_bias=0.2, absolute_mean_bias=0.2,
                  fold_win_count=3),
         )
@@ -382,7 +382,7 @@ class TestDeterministicReason:
         assert r1.iloc[0]["selection_reason"] == r2.iloc[0]["selection_reason"]
 
     def test_reason_is_non_empty_string(self):
-        fm = _make(_row(model_name=SEASONAL_NAIVE_NAME, median_mase=0.80))
+        fm = _make(_row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.80))
         result = select_models(fm, max_bias_ratio=None)
         reason = result.iloc[0]["selection_reason"]
         assert isinstance(reason, str) and len(reason) > 0
@@ -395,8 +395,8 @@ class TestDeterministicReason:
     def test_reason_ends_with_period(self):
         """Reasons should be complete sentences ending with a period."""
         fm = _make(
-            _row(model_name=SEASONAL_NAIVE_NAME, median_mase=0.80),
-            _row(model_name="auto_arima",        median_mase=0.60, fold_win_count=4),
+            _row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.80),
+            _row(model_name="auto_arima",        median_mase_lag1=0.60, fold_win_count=4),
         )
         result = select_models(fm, max_bias_ratio=None)
         assert result.iloc[0]["selection_reason"].endswith(".")
@@ -409,10 +409,10 @@ class TestDeterministicReason:
 class TestMultiReport:
     def test_one_row_per_report(self):
         fm = _make(
-            _row(report_id="R_001", model_name=SEASONAL_NAIVE_NAME, median_mase=0.90),
-            _row(report_id="R_001", model_name="auto_arima",         median_mase=0.70),
-            _row(report_id="R_002", model_name=SEASONAL_NAIVE_NAME, median_mase=1.10),
-            _row(report_id="R_002", model_name="ets",                median_mase=0.80),
+            _row(report_id="R_001", model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.90),
+            _row(report_id="R_001", model_name="auto_arima",         median_mase_lag1=0.70),
+            _row(report_id="R_002", model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=1.10),
+            _row(report_id="R_002", model_name="ets",                median_mase_lag1=0.80),
         )
         result = select_models(fm, max_bias_ratio=None)
         assert len(result) == 2
@@ -420,8 +420,8 @@ class TestMultiReport:
 
     def test_sorted_by_report_id(self):
         fm = _make(
-            _row(report_id="R_002", model_name=SEASONAL_NAIVE_NAME, median_mase=0.90),
-            _row(report_id="R_001", model_name=SEASONAL_NAIVE_NAME, median_mase=0.80),
+            _row(report_id="R_002", model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.90),
+            _row(report_id="R_001", model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.80),
         )
         result = select_models(fm, max_bias_ratio=None)
         assert list(result["report_id"]) == ["R_001", "R_002"]
@@ -431,14 +431,14 @@ class TestMultiReport:
         fm = _make(
             # R_001: auto_arima fails bias guardrail
             _row(report_id="R_001", model_name=SEASONAL_NAIVE_NAME,
-                 median_mase=0.90, mean_mae=10.0, mean_bias=0.0, absolute_mean_bias=0.0),
+                 median_mase_lag1=0.90, mean_mae=10.0, mean_bias=0.0, absolute_mean_bias=0.0),
             _row(report_id="R_001", model_name="auto_arima",
-                 median_mase=0.70, mean_mae=10.0, mean_bias=6.0, absolute_mean_bias=6.0),
+                 median_mase_lag1=0.70, mean_mae=10.0, mean_bias=6.0, absolute_mean_bias=6.0),
             # R_002: auto_arima passes — low bias
             _row(report_id="R_002", model_name=SEASONAL_NAIVE_NAME,
-                 median_mase=0.90, mean_mae=10.0, mean_bias=0.0, absolute_mean_bias=0.0),
+                 median_mase_lag1=0.90, mean_mae=10.0, mean_bias=0.0, absolute_mean_bias=0.0),
             _row(report_id="R_002", model_name="auto_arima",
-                 median_mase=0.70, mean_mae=10.0, mean_bias=0.4, absolute_mean_bias=0.4),
+                 median_mase_lag1=0.70, mean_mae=10.0, mean_bias=0.4, absolute_mean_bias=0.4),
         )
         result = select_models(fm, max_bias_ratio=0.5)
         r1 = result[result["report_id"] == "R_001"].iloc[0]
@@ -453,12 +453,12 @@ class TestMultiReport:
 
 class TestInputValidation:
     def test_missing_column_raises(self):
-        fm = _make(_row()).drop(columns=["median_mase"])
+        fm = _make(_row()).drop(columns=["median_mase_lag1"])
         with pytest.raises(ValueError, match="missing required columns"):
             select_models(fm)
 
     def test_output_has_exactly_required_columns(self):
-        fm = _make(_row(model_name=SEASONAL_NAIVE_NAME, median_mase=0.80))
+        fm = _make(_row(model_name=SEASONAL_NAIVE_NAME, median_mase_lag1=0.80))
         result = select_models(fm, max_bias_ratio=None)
         assert list(result.columns) == _OUTPUT_COLS
 

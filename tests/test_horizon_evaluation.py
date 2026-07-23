@@ -3,8 +3,7 @@
 Fixture design
 --------------
 Two reports, each with 90 days of data.
-BacktestConfig: horizon=28, n_folds=2, step=28, min_train=30, seasonal_period=7
-
+BacktestConfig: horizon=28, n_folds=2, step=28, min_train=30
 Minimum series length: 30 + 28 + 28 = 86 → 90 days is sufficient.
 
 Only baseline models (naive, seasonal_naive) are used — no optional deps.
@@ -37,7 +36,6 @@ _CFG = BacktestConfig(
     n_folds=_FOLDS,
     step=_STEP,
     min_train_size=_MIN_TRAIN,
-    seasonal_period=_SEASONAL,
 )
 
 _REGISTRY = {
@@ -79,8 +77,7 @@ def bucket_results_alpha(backtest_outputs_alpha):
     return calculate_horizon_bucket_metrics(
         backtest_outputs_alpha,
         {_REPORT_A: _SERIES_A},
-        seasonal_period=_SEASONAL,
-    )
+        )
 
 
 @pytest.fixture(scope="module")
@@ -95,8 +92,7 @@ def bucket_results_both(backtest_outputs_both):
     return calculate_horizon_bucket_metrics(
         backtest_outputs_both,
         _SERIES_LOOKUP,
-        seasonal_period=_SEASONAL,
-    )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +123,7 @@ class TestRowCounts:
     def test_output_columns_present(self, bucket_results_alpha):
         required = {
             "report_id", "model_name", "fold_number", "cutoff_date",
-            "horizon_bucket", "mae", "wape", "mase", "bias",
+            "horizon_bucket", "mae", "wape", "mase_lag1", "bias",
             "interval_coverage", "observation_count",
         }
         missing = required - set(bucket_results_alpha.columns)
@@ -220,8 +216,8 @@ class TestMetricValues:
             "WAPE outside expected range [0, 2]: " + str(valid_wape[valid_wape > 2].tolist())
         )
 
-    def test_mase_is_non_negative_or_nan(self, bucket_results_alpha):
-        valid_mase = bucket_results_alpha["mase"].dropna()
+    def test_mase_lag1_is_non_negative_or_nan(self, bucket_results_alpha):
+        valid_mase = bucket_results_alpha["mase_lag1"].dropna()
         assert (valid_mase >= 0).all()
 
     def test_mae_finite_for_all_successful_rows(self, bucket_results_alpha):
@@ -279,12 +275,11 @@ class TestMASEFoldTrainingDenominator:
             "TEST", series, {"naive": forecast_naive}, cfg
         )
         results = calculate_horizon_bucket_metrics(
-            preds, series_lookup, seasonal_period=7
-        )
+            preds, series_lookup        )
 
         # Training window is all 5.0 → seasonal naive denom = 0 → MASE = NaN
         full_row = results[results["horizon_bucket"] == "full_horizon"]
-        assert full_row["mase"].isna().all(), (
+        assert full_row["mase_lag1"].isna().all(), (
             "MASE should be NaN when the fold training series is constant "
             "(seasonal naive denominator = 0).  A finite value here means the "
             "full series — not the fold training window — was used as the denominator."
@@ -296,8 +291,7 @@ class TestMASEFoldTrainingDenominator:
             _REPORT_A, _SERIES_A, {"naive": forecast_naive}, _CFG
         )
         results = calculate_horizon_bucket_metrics(
-            preds, {_REPORT_A: _SERIES_A}, seasonal_period=_SEASONAL
-        )
+            preds, {_REPORT_A: _SERIES_A}        )
 
         for (fold, model), grp in results.groupby(["fold_number", "model_name"]):
             full = grp.loc[grp["horizon_bucket"] == "full_horizon"].iloc[0]
@@ -306,12 +300,12 @@ class TestMASEFoldTrainingDenominator:
             # If MASE = mae / denom for each bucket (same denom), then
             # full_mase should be a weighted average of sub-bucket MASEs.
             # At minimum, full MASE ≠ all sub-bucket MASEs simultaneously
-            if pd.notna(full["mase"]):
-                sub_mase = sub_buckets["mase"].dropna()
+            if pd.notna(full["mase_lag1"]):
+                sub_mase = sub_buckets["mase_lag1"].dropna()
                 # Full MASE should lie within the range of sub-bucket MASEs
                 if len(sub_mase) > 0:
-                    assert full["mase"] >= sub_mase.min() - 1e-9
-                    assert full["mase"] <= sub_mase.max() + 1e-9
+                    assert full["mase_lag1"] >= sub_mase.min() - 1e-9
+                    assert full["mase_lag1"] <= sub_mase.max() + 1e-9
 
     def test_mase_denominator_same_across_buckets_of_same_fold(self):
         """Verify MASE / MAE ratio is the same across all buckets of the same fold.
@@ -324,14 +318,13 @@ class TestMASEFoldTrainingDenominator:
             _REPORT_A, _SERIES_A, {"naive": forecast_naive}, _CFG
         )
         results = calculate_horizon_bucket_metrics(
-            preds, {_REPORT_A: _SERIES_A}, seasonal_period=_SEASONAL
-        )
+            preds, {_REPORT_A: _SERIES_A}        )
 
         for (fold, model), grp in results.groupby(["fold_number", "model_name"]):
             ratios = []
             for _, row in grp.iterrows():
-                if pd.notna(row["mase"]) and row["mae"] > 0:
-                    ratios.append(row["mase"] / row["mae"])
+                if pd.notna(row["mase_lag1"]) and row["mae"] > 0:
+                    ratios.append(row["mase_lag1"] / row["mae"])
             if len(ratios) >= 2:
                 assert max(ratios) - min(ratios) < 1e-9, (
                     f"fold={fold}, model={model}: mase/mae ratio is not constant "
@@ -374,8 +367,7 @@ class TestIntervalCoverage:
         )
         preds, _ = evaluate_models_across_folds(_REPORT_A, _SERIES_A, registry, cfg)
         results = calculate_horizon_bucket_metrics(
-            preds, {_REPORT_A: _SERIES_A}, seasonal_period=_SEASONAL
-        )
+            preds, {_REPORT_A: _SERIES_A}        )
         # Forecast is constant 5.0, series values are around 5 ± 3, bounds are [3,7]
         # Coverage should be computed (non-NaN)
         assert results["interval_coverage"].notna().all(), (
@@ -396,8 +388,7 @@ class TestFailedModelBuckets:
         registry = {"always_fails": _always_fails}
         preds, _ = evaluate_models_across_folds(_REPORT_A, _SERIES_A, registry, _CFG)
         results = calculate_horizon_bucket_metrics(
-            preds, {_REPORT_A: _SERIES_A}, seasonal_period=_SEASONAL
-        )
+            preds, {_REPORT_A: _SERIES_A}        )
         # One row per (fold × bucket)
         expected = _FOLDS * _N_BUCKETS
         assert len(results) == expected
@@ -406,25 +397,22 @@ class TestFailedModelBuckets:
         registry = {"always_fails": _always_fails}
         preds, _ = evaluate_models_across_folds(_REPORT_A, _SERIES_A, registry, _CFG)
         results = calculate_horizon_bucket_metrics(
-            preds, {_REPORT_A: _SERIES_A}, seasonal_period=_SEASONAL
-        )
-        for col in ["mae", "wape", "mase", "bias", "interval_coverage"]:
+            preds, {_REPORT_A: _SERIES_A}        )
+        for col in ["mae", "wape", "mase_lag1", "bias", "interval_coverage"]:
             assert results[col].isna().all(), f"{col} should be NaN for failed model"
 
     def test_failed_model_observation_count_is_zero(self):
         registry = {"always_fails": _always_fails}
         preds, _ = evaluate_models_across_folds(_REPORT_A, _SERIES_A, registry, _CFG)
         results = calculate_horizon_bucket_metrics(
-            preds, {_REPORT_A: _SERIES_A}, seasonal_period=_SEASONAL
-        )
+            preds, {_REPORT_A: _SERIES_A}        )
         assert (results["observation_count"] == 0).all()
 
     def test_sibling_model_unaffected_by_failure(self):
         registry = {"naive": forecast_naive, "always_fails": _always_fails}
         preds, _ = evaluate_models_across_folds(_REPORT_A, _SERIES_A, registry, _CFG)
         results = calculate_horizon_bucket_metrics(
-            preds, {_REPORT_A: _SERIES_A}, seasonal_period=_SEASONAL
-        )
+            preds, {_REPORT_A: _SERIES_A}        )
         naive_rows = results[results["model_name"] == "naive"]
         assert naive_rows["mae"].notna().all()
         assert (naive_rows["observation_count"] > 0).all()
