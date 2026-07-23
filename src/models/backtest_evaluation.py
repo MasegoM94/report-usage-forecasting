@@ -14,6 +14,14 @@ evaluate_models_across_folds(report_id, series, model_registry, backtest_config)
     * **predictions** — one row per (fold, model, forecast_date)
     * **fold_metrics** — one row per (fold, model)
 
+evaluate_candidates_across_folds(report_id, series, backtest_config, ...)
+    Fold-aware variant: for each fold, calls ``profile_seasonality`` on the
+    training series to determine which seasonal periods to evaluate, then
+    builds a per-fold candidate list that includes all non-seasonal baselines
+    plus the shortlisted seasonal models.  Returns the same pair of
+    DataFrames as ``evaluate_models_across_folds`` but with additional
+    seasonality-metadata columns.
+
 Design rules
 ------------
 * Every model is run on the same folds.
@@ -24,10 +32,13 @@ Design rules
   is recorded as ``fit_status='misaligned'`` rather than silently dropping rows.
 * Outputs are sorted deterministically before returning.
 * No model selection is performed here.
+* Seasonal-period candidates are derived exclusively from the fold training
+  series; test-fold observations are never read during candidate profiling.
 """
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -39,11 +50,20 @@ from src.config.forecasting import (
     BACKTEST_STEP_DAYS,
     FORECAST_HORIZON_DAYS,
     MIN_TRAIN_DAYS,
+    NON_SEASONAL_PERIOD,
     SEASONAL_CANDIDATES,
 )
 from src.models.backtesting import ForecastFold, generate_rolling_splits
-from src.models.candidates import ModelResult
+from src.models.candidates import (
+    ModelResult,
+    forecast_auto_arima,
+    forecast_ets,
+    forecast_moving_average,
+    forecast_naive,
+    forecast_seasonal_naive,
+)
 from src.models.metrics import calculate_interval_metrics, calculate_point_metrics
+from src.models.seasonality import profile_seasonality
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +118,95 @@ _METRIC_COLS = [
     "interval_coverage", "mean_interval_width",
     "fit_status", "error_message",
 ]
+
+# ---------------------------------------------------------------------------
+# Extended column lists for evaluate_candidates_across_folds
+# ---------------------------------------------------------------------------
+
+# Columns added by fold-specific seasonal profiling (same in both output tables)
+_CANDIDATE_EXTRA_COLS = [
+    "model_family",
+    "candidate_m",
+    "seasonal_candidate_rank",
+    "cycles_available",
+    "autocorrelation_at_m",
+    "spectral_power_at_m",
+    "seasonality_status",
+    "candidate_source",
+]
+
+_PRED_COLS_EXT = [
+    "report_id", "fold_number", "cutoff_date", "train_start", "train_end",
+    "forecast_date", "horizon_step",
+    "model_name", "model_family", "candidate_m",
+    "seasonal_candidate_rank", "cycles_available",
+    "autocorrelation_at_m", "spectral_power_at_m",
+    "seasonality_status", "candidate_source",
+    "actual", "forecast", "lower_bound", "upper_bound", "fit_status",
+]
+
+_METRIC_COLS_EXT = [
+    "report_id", "fold_number", "cutoff_date",
+    "model_name", "model_family", "candidate_m",
+    "seasonal_candidate_rank", "cycles_available",
+    "autocorrelation_at_m", "spectral_power_at_m",
+    "seasonality_status", "candidate_source",
+    "mae", "rmse", "wape", "mase", "bias",
+    "interval_coverage", "mean_interval_width",
+    "fit_status", "error_message",
+]
+
+
+# ---------------------------------------------------------------------------
+# Candidate specification (internal to evaluate_candidates_across_folds)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _CandidateSpec:
+    """One model-period pair ready to be evaluated on a fold.
+
+    Attributes
+    ----------
+    model_name:
+        Stable identifier carried into the output DataFrames, e.g.
+        ``"seasonal_naive_m7"`` or ``"auto_arima_m1"``.
+    model_fn:
+        Callable with signature ``(training_series, horizon) -> ModelResult``.
+        The seasonal period (if any) is already bound via ``functools.partial``.
+    model_family:
+        Coarse model family label: ``"naive"``, ``"moving_average"``,
+        ``"seasonal_naive"``, ``"auto_arima"``, or ``"ets"``.
+    candidate_m:
+        Seasonal period for this candidate.  Always ``NON_SEASONAL_PERIOD``
+        (= 1) for non-seasonal models.
+    seasonal_candidate_rank:
+        Position in the profiler's ranked list of seasonal candidates
+        (1 = highest-scoring, 2 = second, …).  0 for non-seasonal candidates.
+    cycles_available:
+        ``floor(n_train / candidate_m)`` as reported by the profiler.
+        For non-seasonal candidates (m=1) this equals ``n_train``.
+    autocorrelation_at_m:
+        Lag-m autocorrelation reported by the profiler, or NaN for m=1.
+    spectral_power_at_m:
+        Spectral power at frequency 1/m reported by the profiler, or NaN
+        for m=1.
+    seasonality_status:
+        ``profile.seasonality_status`` for this fold's training series.
+    candidate_source:
+        ``"baseline"`` for models always evaluated (naive, moving_average,
+        arima_m1, ets_m1); ``"seasonality_profiler"`` for models whose m
+        was shortlisted by the profiler.
+    """
+    model_name: str
+    model_fn: Callable
+    model_family: str
+    candidate_m: int
+    seasonal_candidate_rank: int
+    cycles_available: int
+    autocorrelation_at_m: float
+    spectral_power_at_m: float
+    seasonality_status: str
+    candidate_source: str
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +470,288 @@ def evaluate_models_across_folds(
         fold_metrics = pd.DataFrame(columns=_METRIC_COLS)
 
     # Deterministic sort
+    predictions = predictions.sort_values(
+        ["report_id", "fold_number", "model_name", "horizon_step"],
+        ignore_index=True,
+    )
+    fold_metrics = fold_metrics.sort_values(
+        ["report_id", "fold_number", "model_name"],
+        ignore_index=True,
+    )
+
+    return predictions, fold_metrics
+
+
+# ---------------------------------------------------------------------------
+# Fold-specific candidate builder
+# ---------------------------------------------------------------------------
+
+def _build_fold_candidates(
+    fold: ForecastFold,
+    candidate_periods: tuple[int, ...],
+    include_ets: bool,
+    include_arima: bool,
+) -> list[_CandidateSpec]:
+    """Profile *fold.train_series* and return an ordered candidate list.
+
+    The training series is the only input to ``profile_seasonality``; the
+    fold's test series is never read.  This guarantees that test-fold
+    observations cannot influence which seasonal periods are evaluated.
+
+    The returned list always contains the non-seasonal baselines (naive,
+    moving_average, and — when the optional libraries are requested — arima_m1
+    and ets_m1), followed by the seasonal candidates shortlisted by the
+    profiler in score order.
+
+    Duplicate (model_family, candidate_m) pairs are silently dropped so that
+    the same model-period combination is never fitted twice.
+    """
+    profile = profile_seasonality(fold.train_series, candidate_periods=candidate_periods)
+    n_train = len(fold.train_series)
+    status = profile.seasonality_status
+
+    specs: list[_CandidateSpec] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _add(spec: _CandidateSpec) -> None:
+        key = (spec.model_family, spec.candidate_m)
+        if key not in seen:
+            seen.add(key)
+            specs.append(spec)
+
+    def _ns_meta(family: str) -> dict:
+        """Metadata for a non-seasonal (m=1) candidate."""
+        return dict(
+            model_family=family,
+            candidate_m=NON_SEASONAL_PERIOD,
+            seasonal_candidate_rank=0,
+            cycles_available=n_train,
+            autocorrelation_at_m=float("nan"),
+            spectral_power_at_m=float("nan"),
+            seasonality_status=status,
+            candidate_source="baseline",
+        )
+
+    # ------------------------------------------------------------------
+    # Non-seasonal baselines — always evaluated (requirements 2, 4, 6)
+    # ------------------------------------------------------------------
+    _add(_CandidateSpec(
+        model_name="naive",
+        model_fn=forecast_naive,
+        **_ns_meta("naive"),
+    ))
+    _add(_CandidateSpec(
+        model_name="moving_average",
+        model_fn=forecast_moving_average,
+        **_ns_meta("moving_average"),
+    ))
+    if include_arima:
+        _add(_CandidateSpec(
+            model_name=f"auto_arima_m{NON_SEASONAL_PERIOD}",
+            model_fn=functools.partial(
+                forecast_auto_arima, seasonal_period=NON_SEASONAL_PERIOD
+            ),
+            **_ns_meta("auto_arima"),
+        ))
+    if include_ets:
+        _add(_CandidateSpec(
+            model_name=f"ets_m{NON_SEASONAL_PERIOD}",
+            model_fn=functools.partial(
+                forecast_ets, seasonal_period=NON_SEASONAL_PERIOD
+            ),
+            **_ns_meta("ets"),
+        ))
+
+    # ------------------------------------------------------------------
+    # Seasonal candidates from the profiler (requirements 3, 4, 5)
+    # selected_candidate_periods[0] is always NON_SEASONAL_PERIOD; skip it.
+    # ------------------------------------------------------------------
+    seasonal_ms = [
+        m for m in profile.selected_candidate_periods
+        if m > NON_SEASONAL_PERIOD
+    ]
+    for rank, m in enumerate(seasonal_ms, start=1):
+        s_meta = dict(
+            candidate_m=m,
+            seasonal_candidate_rank=rank,
+            cycles_available=profile.cycles_available_by_period.get(m, 0),
+            autocorrelation_at_m=profile.autocorrelation_by_period.get(
+                m, float("nan")
+            ),
+            spectral_power_at_m=profile.spectral_power_by_period.get(
+                m, float("nan")
+            ),
+            seasonality_status=status,
+            candidate_source="seasonality_profiler",
+        )
+
+        # Seasonal naïve (requirement 3)
+        _add(_CandidateSpec(
+            model_name=f"seasonal_naive_m{m}",
+            model_fn=functools.partial(forecast_seasonal_naive, seasonal_period=m),
+            model_family="seasonal_naive",
+            **s_meta,
+        ))
+        # SARIMA (requirement 4)
+        if include_arima:
+            _add(_CandidateSpec(
+                model_name=f"auto_arima_m{m}",
+                model_fn=functools.partial(forecast_auto_arima, seasonal_period=m),
+                model_family="auto_arima",
+                **s_meta,
+            ))
+        # Seasonal ETS (requirement 5)
+        if include_ets:
+            _add(_CandidateSpec(
+                model_name=f"ets_m{m}",
+                model_fn=functools.partial(forecast_ets, seasonal_period=m),
+                model_family="ets",
+                **s_meta,
+            ))
+
+    return specs
+
+
+# ---------------------------------------------------------------------------
+# evaluate_candidates_across_folds — public API
+# ---------------------------------------------------------------------------
+
+def evaluate_candidates_across_folds(
+    report_id: str,
+    series: pd.Series,
+    backtest_config: Optional[BacktestConfig] = None,
+    candidate_periods: tuple[int, ...] = SEASONAL_CANDIDATES,
+    include_ets: bool = True,
+    include_arima: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Evaluate fold-specific seasonal candidates on every rolling-origin fold.
+
+    For each fold this function:
+
+    1. Calls ``profile_seasonality(fold.train_series, ...)`` — test
+       observations are never read during profiling.
+    2. Builds a per-fold candidate list: non-seasonal baselines always; seasonal
+       models only for the periods shortlisted by the profiler.
+    3. Runs each candidate and records prediction rows and fold-level metrics.
+    4. Annotates every row with seasonality-metadata columns (``model_family``,
+       ``candidate_m``, ``seasonal_candidate_rank``, etc.).
+
+    MASE is computed with ``seasonal_period = candidate_m`` for each
+    candidate, so the denominator baseline matches the candidate's own
+    seasonal assumption.
+
+    Parameters
+    ----------
+    report_id:
+        Identifier carried into both output DataFrames.
+    series:
+        Continuous daily ``pd.Series`` with a sorted ``DatetimeIndex``.
+    backtest_config:
+        Controls fold generation.  Defaults to ``BacktestConfig()``.
+        ``BacktestConfig.seasonal_period`` is not used here; each candidate
+        supplies its own m.
+    candidate_periods:
+        Tuple of candidate periods passed to the profiler on every fold.
+        Default: ``SEASONAL_CANDIDATES``.
+    include_ets:
+        When ``True`` (default), ETS candidates (ets_m1 and ets_m{m} for
+        each seasonal m) are added to the evaluation.  Set ``False`` to skip
+        ETS when statsmodels is unavailable.
+    include_arima:
+        When ``True`` (default), Auto-ARIMA candidates (auto_arima_m1 and
+        auto_arima_m{m}) are added.  Set ``False`` to skip when pmdarima is
+        unavailable.
+
+    Returns
+    -------
+    predictions : pd.DataFrame
+        One row per (fold, candidate, forecast_date).
+        Columns: all columns in ``evaluate_models_across_folds`` plus
+        ``model_family``, ``candidate_m``, ``seasonal_candidate_rank``,
+        ``cycles_available``, ``autocorrelation_at_m``,
+        ``spectral_power_at_m``, ``seasonality_status``,
+        ``candidate_source``.
+        Sorted by (report_id, fold_number, model_name, horizon_step).
+
+    fold_metrics : pd.DataFrame
+        One row per (fold, candidate).
+        Same extended columns as *predictions* plus all metric columns from
+        ``evaluate_models_across_folds``.
+        Sorted by (report_id, fold_number, model_name).
+
+    Raises
+    ------
+    ValueError
+        Propagated from ``generate_rolling_splits`` when the series is too
+        short to produce even one fold.
+    """
+    if backtest_config is None:
+        backtest_config = BacktestConfig()
+    cfg = backtest_config
+
+    folds, _ = generate_rolling_splits(
+        series,
+        horizon=cfg.horizon,
+        n_folds=cfg.n_folds,
+        step=cfg.step,
+        min_train_size=cfg.min_train_size,
+    )
+
+    all_pred_rows: list[dict] = []
+    all_metric_rows: list[dict] = []
+
+    for fold in folds:
+        candidates = _build_fold_candidates(
+            fold, candidate_periods, include_ets, include_arima
+        )
+
+        for spec in candidates:
+            extra = {
+                "model_family": spec.model_family,
+                "candidate_m": spec.candidate_m,
+                "seasonal_candidate_rank": spec.seasonal_candidate_rank,
+                "cycles_available": spec.cycles_available,
+                "autocorrelation_at_m": spec.autocorrelation_at_m,
+                "spectral_power_at_m": spec.spectral_power_at_m,
+                "seasonality_status": spec.seasonality_status,
+                "candidate_source": spec.candidate_source,
+            }
+
+            try:
+                result = spec.model_fn(fold.train_series, cfg.horizon)
+                if not isinstance(result, ModelResult):
+                    raise TypeError(
+                        f"model '{spec.model_name}' returned "
+                        f"{type(result).__name__}, expected ModelResult"
+                    )
+            except Exception as exc:
+                result = _make_failed_result(spec.model_name, exc)
+
+            # Use candidate_m as the MASE denominator so each model is
+            # measured against its own seasonal-naive baseline.
+            pred_rows = _build_prediction_rows(report_id, fold, result)
+            metric_row = _build_metric_row(
+                report_id, fold, result, pred_rows,
+                seasonal_period=spec.candidate_m,
+            )
+
+            for row in pred_rows:
+                row.update(extra)
+            metric_row.update(extra)
+
+            all_pred_rows.extend(pred_rows)
+            all_metric_rows.append(metric_row)
+
+    if all_pred_rows:
+        predictions = pd.DataFrame(all_pred_rows)[_PRED_COLS_EXT]
+    else:
+        predictions = pd.DataFrame(columns=_PRED_COLS_EXT)
+
+    if all_metric_rows:
+        fold_metrics = pd.DataFrame(all_metric_rows)[_METRIC_COLS_EXT]
+    else:
+        fold_metrics = pd.DataFrame(columns=_METRIC_COLS_EXT)
+
     predictions = predictions.sort_values(
         ["report_id", "fold_number", "model_name", "horizon_step"],
         ignore_index=True,
