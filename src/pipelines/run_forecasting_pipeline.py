@@ -1079,15 +1079,61 @@ def append_metrics_history(
     run_id: str,
     run_timestamp: pd.Timestamp,
 ) -> Optional[Path]:
-    """Append this run's metrics to the long-running metrics history."""
+    """Append this run's per-report metrics to the long-running metrics history.
+
+    Grain
+    -----
+    One row per ``(run_id, report_id)``.  Each pipeline run produces exactly one
+    metrics row per evaluated report, so the composite key is unique within a run
+    and must remain unique across the history file.
+
+    Single-writer assumption
+    ------------------------
+    This function uses an append-mode CSV write with no file locking.  It is
+    safe only when a single process writes at a time.  Concurrent writers will
+    corrupt the file.
+
+    Raises
+    ------
+    ValueError
+        If ``run_id`` is blank, if ``metrics_table`` lacks a ``report_id``
+        column, or if any ``(run_id, report_id)`` key in the incoming batch
+        already exists in the history file.
+    """
     if metrics_table.empty:
         return None
+
+    if not run_id or not str(run_id).strip():
+        raise ValueError("run_id must be a non-empty string.")
+
+    if "report_id" not in metrics_table.columns:
+        raise ValueError(
+            "metrics_table must contain a 'report_id' column "
+            "(grain: one row per report per run)."
+        )
 
     df = metrics_table.copy()
     df["run_id"] = run_id
     df["run_timestamp"] = run_timestamp
 
     history_file = project_root / "outputs" / "metrics" / "metrics_history.csv"
+
+    if history_file.exists():
+        existing = pd.read_csv(history_file, usecols=["run_id", "report_id"])
+        if not existing.empty:
+            existing_keys = set(zip(existing["run_id"], existing["report_id"]))
+            incoming_keys = list(zip(df["run_id"], df["report_id"]))
+            duplicates = [k for k in incoming_keys if k in existing_keys]
+            if duplicates:
+                dup_str = ", ".join(
+                    f"(run_id={r}, report_id={p})" for r, p in duplicates[:5]
+                )
+                raise ValueError(
+                    f"metrics_history already contains {len(duplicates)} duplicate "
+                    f"key(s). First duplicates: {dup_str}. "
+                    "Pass a new run_id for each pipeline execution."
+                )
+
     write_header = not history_file.exists()
     df.to_csv(history_file, mode="a", index=False, header=write_header)
     return history_file
@@ -1112,8 +1158,59 @@ def compute_daily_actuals(raw_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _validate_realized_errors_history(existing: pd.DataFrame) -> None:
+    """Validate the existing realized_errors_history DataFrame before dedup.
+
+    Raises
+    ------
+    ValueError
+        If any deduplication key column contains nulls, if ``target_date``
+        cannot be parsed as a valid date, or if the file already contains
+        duplicate ``(run_id, report_id, target_date)`` keys.
+    """
+    key_cols = ["run_id", "report_id", "target_date"]
+
+    for col in key_cols:
+        null_count = existing[col].isna().sum()
+        if null_count:
+            raise ValueError(
+                f"realized_errors_history contains {null_count} null value(s) "
+                f"in key column '{col}'. The history file may be corrupted."
+            )
+
+    # target_date must already be datetime after parse_dates; check for NaT
+    if not pd.api.types.is_datetime64_any_dtype(existing["target_date"]):
+        raise ValueError(
+            "realized_errors_history 'target_date' column could not be parsed "
+            "as datetime. The history file may be corrupted."
+        )
+
+    dup_mask = existing.duplicated(subset=key_cols, keep=False)
+    n_dups = dup_mask.sum()
+    if n_dups:
+        sample = existing.loc[dup_mask, key_cols].head(3).to_dict(orient="records")
+        raise ValueError(
+            f"realized_errors_history contains {n_dups} row(s) with duplicate "
+            f"(run_id, report_id, target_date) keys. "
+            f"Sample duplicates: {sample}. "
+            "The history file may be corrupted."
+        )
+
+
 def update_realized_errors(raw_df: pd.DataFrame, project_root: Path) -> pd.DataFrame:
-    """Backfill actual errors for historical forecasts whose dates have arrived."""
+    """Backfill actual errors for historical forecasts whose dates have arrived.
+
+    Single-writer assumption
+    ------------------------
+    Uses append-mode CSV writes with no file locking.  Safe only when a single
+    process writes at a time.  Concurrent writers will produce duplicates.
+
+    Raises
+    ------
+    ValueError
+        If the existing realized_errors_history file contains invalid dates,
+        null deduplication keys, or pre-existing duplicate keys.
+    """
     forecasts_history_file = project_root / "outputs" / "forecasts" / "forecasts_history.csv"
     realized_errors_file = project_root / "outputs" / "metrics" / "realized_errors_history.csv"
     if not forecasts_history_file.exists():
@@ -1141,8 +1238,24 @@ def update_realized_errors(raw_df: pd.DataFrame, project_root: Path) -> pd.DataF
         return pd.DataFrame()
 
     if realized_errors_file.exists():
-        existing = pd.read_csv(realized_errors_file, parse_dates=["target_date"])
+        existing = pd.read_csv(
+            realized_errors_file,
+            parse_dates={"target_date": ["target_date"]},
+        )
+        # parse_dates with a dict uses errors="raise" semantics via to_datetime;
+        # re-parse explicitly so we surface bad values immediately.
+        try:
+            existing["target_date"] = pd.to_datetime(
+                existing["target_date"], errors="raise"
+            )
+        except Exception as exc:
+            raise ValueError(
+                "realized_errors_history contains an unparseable 'target_date' value. "
+                f"Original error: {exc}"
+            ) from exc
+
         if not existing.empty:
+            _validate_realized_errors_history(existing)
             existing_keys = set(
                 zip(existing["run_id"], existing["report_id"], existing["target_date"])
             )
