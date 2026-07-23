@@ -371,31 +371,34 @@ class TestGracefulFailure:
 
 class TestModelNames:
     def test_baseline_model_names_are_stable(self):
-        expected = {
-            forecast_naive: "naive",
-            forecast_seasonal_naive: "seasonal_naive",
-            forecast_moving_average: "moving_average",
-        }
-        for fn, name in expected.items():
-            result = fn(_TRAIN, horizon=HORIZON)
-            assert result.model_name == name
+        # naive and moving_average are not period-specific; their names are fixed.
+        # seasonal_naive encodes m in its name.
+        assert forecast_naive(_TRAIN, horizon=HORIZON).model_name == "naive"
+        assert forecast_moving_average(_TRAIN, horizon=HORIZON).model_name == "moving_average"
+        default_m = SEASONAL_CANDIDATES[0]  # 7
+        assert forecast_seasonal_naive(_TRAIN, horizon=HORIZON).model_name == f"seasonal_naive_m{default_m}"
 
     @_skip_no_statsmodels
-    def test_ets_model_name(self):
-        assert forecast_ets(_TRAIN, horizon=HORIZON).model_name == "ets"
+    def test_ets_model_name_includes_m(self):
+        default_m = SEASONAL_CANDIDATES[0]
+        result = forecast_ets(_TRAIN, horizon=HORIZON)
+        assert result.model_name == f"ets_m{default_m}"
 
     @_skip_no_pmdarima
-    def test_auto_arima_model_name(self):
-        assert forecast_auto_arima(_TRAIN, horizon=HORIZON).model_name == "auto_arima"
+    def test_auto_arima_model_name_includes_m(self):
+        default_m = SEASONAL_CANDIDATES[0]
+        result = forecast_auto_arima(_TRAIN, horizon=HORIZON)
+        assert result.model_name == f"auto_arima_m{default_m}"
 
     def test_failed_result_still_carries_model_name(self):
         bad = pd.Series([1.0], index=[0])  # integer index → fails validation
+        default_m = SEASONAL_CANDIDATES[0]
         for fn, name in [
             (forecast_naive, "naive"),
-            (forecast_seasonal_naive, "seasonal_naive"),
+            (forecast_seasonal_naive, f"seasonal_naive_m{default_m}"),
             (forecast_moving_average, "moving_average"),
-            (forecast_ets, "ets"),
-            (forecast_auto_arima, "auto_arima"),
+            (forecast_ets, f"ets_m{default_m}"),
+            (forecast_auto_arima, f"auto_arima_m{default_m}"),
         ]:
             result = fn(bad, horizon=HORIZON)
             assert result.model_name == name
@@ -486,3 +489,195 @@ class TestStatisticalModelIntervals:
         assert result.upper_bound_raw is not None
         # Raw and published series exist as separate objects
         assert result.lower_bound is not result.lower_bound_raw
+
+
+# ---------------------------------------------------------------------------
+# 9. Multi-period candidates — requirements 12-14
+# ---------------------------------------------------------------------------
+
+class TestMultiPeriodCandidates:
+    """Verify correct behaviour for each candidate period and horizon variant.
+
+    Tests cover:
+    * m = 1 (non-seasonal ARIMA / ETS)
+    * m = 7  (weekly — default)
+    * m = 28 (four-week)
+    * m = 30 (approximate monthly)
+    * m = 90 (approximate quarterly, sufficient & insufficient history)
+    * horizon < m  (partial-cycle tile)
+    * horizon > m  (multi-cycle tile)
+    * insufficient history → failed ModelResult, not an exception
+    * independent failure — sibling models unaffected
+    """
+
+    # ------------------------------------------------------------------
+    # Seasonal naïve: model_name and output length for each m
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("m", [1, 7, 28, 30, 90])
+    def test_seasonal_naive_model_name_includes_m(self, m):
+        result = forecast_seasonal_naive(_TRAIN, horizon=HORIZON, seasonal_period=m)
+        assert result.model_name == f"seasonal_naive_m{m}"
+
+    @pytest.mark.parametrize("m", [1, 7, 28, 30, 90])
+    def test_seasonal_naive_output_length_is_horizon(self, m):
+        result = forecast_seasonal_naive(_TRAIN, horizon=HORIZON, seasonal_period=m)
+        assert len(result.forecast) == HORIZON
+
+    def test_seasonal_naive_horizon_shorter_than_m(self):
+        # horizon=14 < m=28: tile is cut after 14 values
+        result = forecast_seasonal_naive(_TRAIN, horizon=14, seasonal_period=28)
+        assert result.fit_status == "ok"
+        assert len(result.forecast) == 14
+
+    def test_seasonal_naive_horizon_longer_than_m(self):
+        # horizon=56 > m=28: two full cycles
+        result = forecast_seasonal_naive(_TRAIN, horizon=56, seasonal_period=28)
+        assert result.fit_status == "ok"
+        assert len(result.forecast) == 56
+
+    def test_seasonal_naive_m90_horizon_shorter_than_period(self):
+        # horizon=28 < m=90: tile produces first 28 of the 90-day pattern
+        result = forecast_seasonal_naive(_TRAIN, horizon=HORIZON, seasonal_period=90)
+        assert len(result.forecast) == HORIZON
+
+    def test_seasonal_naive_metadata_preserves_m(self):
+        for m in [7, 28, 30, 90]:
+            result = forecast_seasonal_naive(_TRAIN, horizon=HORIZON, seasonal_period=m)
+            assert result.model_metadata["seasonal_period"] == m
+
+    # ------------------------------------------------------------------
+    # ETS: model_name, non-seasonal path (m=1), fallback on short series
+    # ------------------------------------------------------------------
+
+    @_skip_no_statsmodels
+    @pytest.mark.parametrize("m", [1, 7, 28])
+    def test_ets_model_name_includes_m(self, m):
+        result = forecast_ets(_TRAIN, horizon=HORIZON, seasonal_period=m)
+        _require_fit_success(result)
+        assert result.model_name == f"ets_m{m}"
+
+    @_skip_no_statsmodels
+    def test_ets_m1_is_non_seasonal(self):
+        result = forecast_ets(_TRAIN, horizon=HORIZON, seasonal_period=1)
+        _require_fit_success(result)
+        assert result.model_metadata["seasonal"] is None
+        assert result.model_metadata["fallback_no_seasonal"] is True
+
+    @_skip_no_statsmodels
+    def test_ets_requested_seasonal_period_preserved_on_fallback(self):
+        # Short series: 100 obs < 3*90 = 270 → fallback, but requested period recorded
+        short = _daily_series(100)
+        result = forecast_ets(short, horizon=HORIZON, seasonal_period=90)
+        _require_fit_success(result)
+        assert result.model_metadata["fallback_no_seasonal"] is True
+        assert result.model_metadata["requested_seasonal_period"] == 90
+
+    @_skip_no_statsmodels
+    def test_ets_m7_output_length_is_horizon(self):
+        result = forecast_ets(_TRAIN, horizon=HORIZON, seasonal_period=7)
+        _require_fit_success(result)
+        assert len(result.forecast) == HORIZON
+
+    @_skip_no_statsmodels
+    def test_ets_m28_with_sufficient_history(self):
+        result = forecast_ets(_TRAIN, horizon=HORIZON, seasonal_period=28)
+        _require_fit_success(result)
+        assert len(result.forecast) == HORIZON
+        assert result.model_name == "ets_m28"
+
+    # ------------------------------------------------------------------
+    # Auto-ARIMA: m=1 non-seasonal, m=7, m=28, m=30, m=90
+    # ------------------------------------------------------------------
+
+    @_skip_no_pmdarima
+    def test_auto_arima_m1_is_non_seasonal(self):
+        result = forecast_auto_arima(_TRAIN, horizon=HORIZON, seasonal_period=1)
+        _require_fit_success(result)
+        assert result.model_name == "auto_arima_m1"
+        assert len(result.forecast) == HORIZON
+        # pmdarima reports seasonal_order as (0,0,0,0) when seasonal=False
+        sp, sd, sq, m = result.model_metadata["seasonal_order"]
+        assert m == 0, f"Expected non-seasonal m=0 in seasonal_order, got {m}"
+
+    @_skip_no_pmdarima
+    @pytest.mark.parametrize("m", [7, 28])
+    def test_auto_arima_seasonal_model_name(self, m):
+        result = forecast_auto_arima(_TRAIN, horizon=HORIZON, seasonal_period=m)
+        _require_fit_success(result)
+        assert result.model_name == f"auto_arima_m{m}"
+        assert len(result.forecast) == HORIZON
+
+    @_skip_no_pmdarima
+    def test_auto_arima_m30_sufficient_history(self):
+        # 365 obs >= 3*30=90 → should fit
+        result = forecast_auto_arima(_TRAIN, horizon=HORIZON, seasonal_period=30)
+        _require_fit_success(result)
+        assert result.model_name == "auto_arima_m30"
+        assert result.model_metadata["seasonal_period"] == 30
+
+    @_skip_no_pmdarima
+    def test_auto_arima_m90_sufficient_history(self):
+        # 365 obs >= 3*90=270 → should fit
+        result = forecast_auto_arima(_TRAIN, horizon=HORIZON, seasonal_period=90)
+        _require_fit_success(result)
+        assert result.model_name == "auto_arima_m90"
+        assert len(result.forecast) == HORIZON
+
+    @_skip_no_pmdarima
+    def test_auto_arima_m90_insufficient_history_returns_failed(self):
+        # 100 obs < 3*90=270 → must return failed, not raise
+        short = _daily_series(100)
+        result = forecast_auto_arima(short, horizon=HORIZON, seasonal_period=90)
+        assert result.fit_status == "failed"
+        assert result.forecast is None
+        assert result.model_name == "auto_arima_m90"
+        assert "insufficient" in (result.error_message or "").lower()
+
+    @_skip_no_pmdarima
+    def test_auto_arima_m28_insufficient_history_returns_failed(self):
+        # 50 obs < 3*28=84 → failed
+        short = _daily_series(50)
+        result = forecast_auto_arima(short, horizon=HORIZON, seasonal_period=28)
+        assert result.fit_status == "failed"
+        assert result.forecast is None
+
+    # ------------------------------------------------------------------
+    # Graceful failure isolation: one period failing does not affect others
+    # ------------------------------------------------------------------
+
+    def test_m90_failure_does_not_terminate_sibling_naive(self):
+        short = _daily_series(50)
+        failed = forecast_auto_arima(short, horizon=HORIZON, seasonal_period=90) if _PMDARIMA_AVAILABLE \
+            else forecast_seasonal_naive(short, horizon=HORIZON, seasonal_period=90)
+        # Regardless of that result, naive on same series still succeeds
+        good = forecast_naive(short, horizon=HORIZON)
+        assert good.fit_status == "ok"
+        assert good.forecast is not None
+
+    def test_m90_failure_does_not_terminate_m7_arima(self):
+        if not _PMDARIMA_AVAILABLE:
+            pytest.skip("pmdarima not installed")
+        short = _daily_series(50)
+        _ = forecast_auto_arima(short, horizon=HORIZON, seasonal_period=90)  # fails
+        # m=7 on a long series must still succeed
+        good = forecast_auto_arima(_TRAIN, horizon=HORIZON, seasonal_period=7)
+        _require_fit_success(good)
+        assert good.forecast is not None
+
+    # ------------------------------------------------------------------
+    # Output length is always exactly horizon regardless of m
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("m,h", [
+        (7, 3),    # horizon much shorter than m
+        (7, 28),   # horizon = 4m
+        (7, 50),   # horizon > 4m
+        (28, 14),  # horizon < m
+        (28, 28),  # horizon == m
+        (28, 56),  # horizon = 2m
+        (90, 28),  # horizon << m
+    ])
+    def test_seasonal_naive_output_always_equals_horizon(self, m, h):
+        result = forecast_seasonal_naive(_TRAIN, horizon=h, seasonal_period=m)
+        assert len(result.forecast) == h

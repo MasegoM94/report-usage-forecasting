@@ -44,7 +44,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.config.forecasting import FORECAST_HORIZON_DAYS, SEASONAL_CANDIDATES
+from src.config.forecasting import (
+    FORECAST_HORIZON_DAYS,
+    MIN_SEASONAL_CYCLES,
+    NON_SEASONAL_PERIOD,
+    SEASONAL_CANDIDATES,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +207,7 @@ def forecast_seasonal_naive(
         ``True`` when the training series was too short for a seasonal pattern
         and the naïve last-value was used instead.
     """
+    _name = f"seasonal_naive_m{seasonal_period}"
     try:
         _validate_training_series(training_series)
         idx = _forecast_index(training_series, horizon)
@@ -218,7 +224,7 @@ def forecast_seasonal_naive(
 
         raw = _as_series(values, idx, "forecast")
         return ModelResult(
-            model_name="seasonal_naive",
+            model_name=_name,
             forecast=_clip(raw),
             lower_bound=None,
             upper_bound=None,
@@ -229,7 +235,7 @@ def forecast_seasonal_naive(
             fit_status="ok",
         )
     except Exception as exc:
-        return _failed("seasonal_naive", exc)
+        return _failed(_name, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -294,23 +300,31 @@ def forecast_ets(
 
     Uses additive error, additive trend, and additive seasonal components
     (ETS(A,A,A)).  When the series is too short for seasonal decomposition
-    (fewer than two full seasonal cycles), trend-only smoothing is used
-    (ETS(A,A,N)) so a result is always returned rather than failing.
+    (fewer than ``MIN_SEASONAL_CYCLES`` full seasonal cycles), trend-only
+    smoothing is used (ETS(A,A,N)) so a result is always returned rather
+    than failing.  Pass ``seasonal_period=NON_SEASONAL_PERIOD`` (= 1) to
+    request a non-seasonal ETS(A,A,N) explicitly.
 
     Metadata keys
     -------------
     error_type : str       Always ``"add"`` (additive errors).
     trend : str            ``"add"`` or ``None``.
     seasonal : str         ``"add"`` or ``None``.
-    seasonal_periods : int Lag used for the seasonal component.
+    seasonal_periods : int Lag used for the seasonal component; ``None`` when
+                           non-seasonal fallback was applied.
+    requested_seasonal_period : int
+        The ``seasonal_period`` argument supplied by the caller — preserved
+        even when the non-seasonal fallback is used.
     aic : float            Akaike Information Criterion from the fitted model.
     bic : float            Bayesian Information Criterion.
     converged : bool       Whether the optimiser reported convergence.
     fallback_no_seasonal : bool
-        ``True`` when seasonal fitting was skipped due to insufficient history.
+        ``True`` when seasonal fitting was skipped due to insufficient history
+        or because ``seasonal_period == NON_SEASONAL_PERIOD``.
     prediction_interval_alpha : float
         The alpha level used for prediction intervals (default 0.05 → 95 %).
     """
+    _name = f"ets_m{seasonal_period}"
     try:
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
@@ -318,8 +332,12 @@ def forecast_ets(
         idx = _forecast_index(training_series, horizon)
         y = training_series.astype(float)
 
-        # Need at least two full seasonal cycles for seasonal ETS
-        use_seasonal = len(y) >= 2 * seasonal_period
+        # Seasonal ETS requires at least MIN_SEASONAL_CYCLES full cycles.
+        # seasonal_period=1 (NON_SEASONAL_PERIOD) always uses the non-seasonal spec.
+        use_seasonal = (
+            seasonal_period > NON_SEASONAL_PERIOD
+            and len(y) >= MIN_SEASONAL_CYCLES * seasonal_period
+        )
         model = ExponentialSmoothing(
             y,
             trend="add",
@@ -346,7 +364,7 @@ def forecast_ets(
             hi_raw = None
 
         return ModelResult(
-            model_name="ets",
+            model_name=_name,
             forecast=_clip(raw),
             lower_bound=_clip(lo_raw) if lo_raw is not None else None,
             upper_bound=_clip(hi_raw) if hi_raw is not None else None,
@@ -358,6 +376,7 @@ def forecast_ets(
                 "trend": "add",
                 "seasonal": "add" if use_seasonal else None,
                 "seasonal_periods": seasonal_period if use_seasonal else None,
+                "requested_seasonal_period": seasonal_period,
                 "aic": float(fit.aic),
                 "bic": float(fit.bic),
                 "converged": bool(fit.mle_retvals.get("converged", True)
@@ -369,7 +388,7 @@ def forecast_ets(
             fit_status="converged",
         )
     except Exception as exc:
-        return _failed("ets", exc)
+        return _failed(_name, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -382,25 +401,32 @@ def forecast_auto_arima(
     seasonal_period: int = SEASONAL_CANDIDATES[0],
     alpha: float = 0.05,
 ) -> ModelResult:
-    """Fit an Auto-ARIMA (SARIMA) model and forecast *horizon* days ahead.
+    """Fit an Auto-ARIMA / SARIMA model and forecast *horizon* days ahead.
 
-    Uses ``pmdarima.auto_arima`` with stepwise search and weekly seasonality.
-    The model is fitted on *training_series* only; no in-sample refit is
-    performed in this function (callers control when to update with new
-    observations).
+    Uses ``pmdarima.auto_arima`` with stepwise search.  When
+    ``seasonal_period == NON_SEASONAL_PERIOD`` (= 1), the search is
+    restricted to non-seasonal ARIMA (no seasonal terms).  For all other
+    values of ``seasonal_period``, a SARIMA search is run with ``m`` set
+    to that period.
+
+    The function validates that the training series contains at least
+    ``MIN_SEASONAL_CYCLES × seasonal_period`` observations before fitting
+    a seasonal model.  Shorter series return a ``failed`` ModelResult so
+    that the rest of the evaluation continues uninterrupted.
 
     Metadata keys
     -------------
     order : tuple[int, int, int]          ARIMA (p, d, q).
-    seasonal_order : tuple[int, int, int, int]  Seasonal (P, D, Q, m).
-    seasonal_period : int                 The ``m`` parameter passed to auto_arima.
+    seasonal_order : tuple[int, int, int, int]  Seasonal (P, D, Q, m);
+                                          (0, 0, 0, 0) for non-seasonal fits.
+    seasonal_period : int                 The ``seasonal_period`` argument.
     aic : float                           Akaike Information Criterion.
     aicc : float                          Corrected AIC (penalises small samples).
     bic : float                           Bayesian Information Criterion.
     model_str : str                       Human-readable order string.
-    fit_status : str                      ``"converged"`` or ``"did_not_converge"``.
     n_train : int                         Number of training observations.
     """
+    _name = f"auto_arima_m{seasonal_period}"
     try:
         from pmdarima import auto_arima
 
@@ -408,15 +434,28 @@ def forecast_auto_arima(
         idx = _forecast_index(training_series, horizon)
         y = training_series.astype(float)
 
-        model = auto_arima(
-            y,
-            seasonal=True,
-            m=seasonal_period,
+        use_seasonal = seasonal_period > NON_SEASONAL_PERIOD
+        if use_seasonal and len(y) < MIN_SEASONAL_CYCLES * seasonal_period:
+            raise ValueError(
+                f"Insufficient training history for seasonal_period={seasonal_period}: "
+                f"need at least {MIN_SEASONAL_CYCLES} × {seasonal_period} = "
+                f"{MIN_SEASONAL_CYCLES * seasonal_period} observations, "
+                f"got {len(y)}."
+            )
+
+        arima_kwargs: dict = dict(
             stepwise=True,
             suppress_warnings=True,
             error_action="ignore",
             trace=False,
         )
+        if use_seasonal:
+            arima_kwargs["seasonal"] = True
+            arima_kwargs["m"] = seasonal_period
+        else:
+            arima_kwargs["seasonal"] = False
+
+        model = auto_arima(y, **arima_kwargs)
 
         fc_raw_arr, conf_int = model.predict(n_periods=horizon, return_conf_int=True, alpha=alpha)
         raw = _as_series(fc_raw_arr, idx, "forecast")
@@ -429,7 +468,6 @@ def forecast_auto_arima(
         sp, sd, sq, m = model.seasonal_order
         model_str = f"ARIMA({p},{d},{q})x({sp},{sd},{sq},{m})"
 
-        # pmdarima exposes aic/aicc/bic as properties
         try:
             aic_val = float(model.aic())
         except Exception:
@@ -444,7 +482,7 @@ def forecast_auto_arima(
             bic_val = float("nan")
 
         return ModelResult(
-            model_name="auto_arima",
+            model_name=_name,
             forecast=_clip(raw),
             lower_bound=_clip(lo_raw),
             upper_bound=_clip(hi_raw),
@@ -464,4 +502,4 @@ def forecast_auto_arima(
             fit_status="converged",
         )
     except Exception as exc:
-        return _failed("auto_arima", exc)
+        return _failed(_name, exc)
