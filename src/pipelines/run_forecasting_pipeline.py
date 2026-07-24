@@ -1685,6 +1685,19 @@ def save_production_outputs(
     else:
         paths["model_selection"] = None
 
+    # Prediction-level backtest output (diagnostic and audit dataset)
+    if predictions is not None and not predictions.empty:
+        try:
+            from src.models.backtest_predictions import save_backtest_predictions
+            bp_path = save_backtest_predictions(
+                predictions, project_root, evaluation_run_id=run_id
+            )
+            paths["backtest_predictions"] = bp_path
+        except Exception:
+            paths["backtest_predictions"] = None
+    else:
+        paths["backtest_predictions"] = None
+
     # Backtest horizon-bucket performance output
     if predictions is not None and series_dict and not predictions.empty:
         try:
