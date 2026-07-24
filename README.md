@@ -216,15 +216,21 @@ Run the notebooks in this order:
    - Applies data sufficiency gating after the complete series is built.
    - Trains the forecasting baseline and writes model outputs to `outputs/`.
 
-6. `notebooks/06_report_analytics.ipynb`
+6. `notebooks/06_model_diagnostics.ipynb` *(Sprint 5)*
+   - Loads all 19 diagnostic output files from `outputs/diagnostics/`.
+   - Explores autocorrelation, bias stability, outlier, distribution, and interval calibration diagnostics.
+   - Displays the consolidated model-health summary from `report_model_diagnostics_latest.csv`.
+   - Read-only: does not rerun the pipeline, generate synthetic data, or alter model selection.
+
+7. `notebooks/06_report_analytics.ipynb`
    - Builds report-level analytics, segmentation, and diagnostics.
    - Writes outputs to `outputs/segments/`, `outputs/diagnostics/`, and `outputs/metrics/`.
 
-7. `notebooks/07_user_analytics.ipynb`
+8. `notebooks/07_user_analytics.ipynb`
    - Builds user-level engagement features and segmentation outputs.
    - Writes outputs to `outputs/segments/` and `outputs/metrics/`.
 
-8. `notebooks/08_genai_insights.ipynb`
+9. `notebooks/08_genai_insights.ipynb`
    - Reads forecast, model performance, segment, and diagnostic CSV outputs.
    - Writes AI insight outputs to `outputs/insights/`.
 
@@ -268,6 +274,65 @@ The scripts perform the same core workflow as the notebooks:
 - `outputs/diagnostics/` stores diagnostic rule outputs.
 - `outputs/insights/` stores GenAI-generated insight outputs.
 - `outputs/validation/` stores validation and reconciliation outputs.
+
+## Sprint 5: Model Diagnostics
+
+Sprint 5 adds a post-selection diagnostic layer that evaluates model health
+**after** the rolling-origin backtesting pipeline has selected a model for each
+report. Diagnostics do not alter model selection; MASE remains the primary
+selection metric.
+
+### Purpose
+
+To answer the question: *given the model that was selected by MASE, how well
+does it behave in practice?*  Diagnostics reveal systematic patterns that
+accuracy metrics alone may miss, such as autocorrelated residuals, directional
+bias, distributional non-normality, and interval miscalibration.
+
+### Three residual sources
+
+| Source | File | Notes |
+|--------|------|-------|
+| Training residuals | `training_residuals_latest.csv` | In-sample fit; may be optimistic |
+| Backtest forecast errors | `backtest_forecast_errors_latest.csv` | Out-of-sample; primary source |
+| Production forecast errors | `production_forecast_errors_latest.csv` | Realized operational; may be sparse early |
+
+All three use `residual = actual - forecast` (positive = underforecast).
+
+### Five diagnostic components
+
+1. **Autocorrelation** — ACF, Ljung-Box, Durbin-Watson on residuals.
+2. **Bias stability** — mean/median/normalized bias per fold and horizon bucket.
+3. **Outlier detection** — MAD robust z-scores, outlier rate, largest miss.
+4. **Distribution shape** — skewness, kurtosis, Jarque-Bera, Shapiro-Wilk.
+5. **Interval calibration** — coverage, coverage gap, Winkler score, lower/upper miss rates.
+
+### Consolidated output
+
+`outputs/diagnostics/report_model_diagnostics_latest.csv` — one row per report.
+
+| Status | Meaning |
+|--------|---------|
+| `healthy` | No component in poor/warning status; sufficient evidence |
+| `watch` | One or more warning-level issues |
+| `poor` | At least one critical issue or multiple poor signals |
+| `insufficient_evidence` | Fewer than 2 valid backtest folds or no production evidence |
+| `calculation_failed` | Diagnostic calculation failed |
+
+### No automatic retraining
+
+`automatic_retraining_triggered` is always `False` in Sprint 5.
+The `consider_retraining` recommended action is a signal for human review only.
+
+### Notebook
+
+`notebooks/06_model_diagnostics.ipynb` — read-only exploration of all 19
+diagnostic output files. Requires the pipeline to have been run first.
+
+See [docs/model_diagnostics_methodology.md](docs/model_diagnostics_methodology.md)
+for methodology details and
+[docs/data_dictionary_sprint5.md](docs/data_dictionary_sprint5.md) for column
+definitions.
 
 ## GenAI Insight Layer
 
