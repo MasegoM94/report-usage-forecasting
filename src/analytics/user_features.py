@@ -3,21 +3,46 @@
 These functions aggregate existing processed Power BI usage tables into one
 simple row per user. They do not regenerate source data or alter forecasting
 logic.
+
+Privacy note
+------------
+Outputs contain only ``user_key`` (surrogate identifier — e.g. UK_0001).
+Direct identifiers (user_id / email, unique_user / display name) are never
+included in analytics outputs. See src/analytics/privacy_policy.py.
+
+Engagement definitions
+----------------------
+lifetime_returned_flag : True when a user has at least one active day after
+    their first-ever active day (active_days > 1). This is a lifetime-history
+    attribute, NOT a windowed returning-user metric.
+    See src/analytics/engagement_definitions.py for canonical definitions.
+
+repeat_usage_flag : DEPRECATED alias for lifetime_returned_flag.
+    Retained for backwards compatibility. Remove in Sprint 7.
 """
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
+from src.analytics.privacy_policy import (
+    PROHIBITED_OUTPUT_COLUMNS,
+    validate_no_direct_identifiers,
+)
+
 
 def _empty_features() -> pd.DataFrame:
-    """Return an empty user feature frame with the expected columns."""
+    """Return an empty user feature frame with the expected columns.
+
+    Note: user_id and unique_user are intentionally excluded — outputs must
+    contain only user_key (surrogate key). See privacy_policy.py.
+    """
     return pd.DataFrame(
         columns=[
             "user_key",
-            "user_id",
-            "unique_user",
             "total_views",
             "active_days",
             "distinct_reports",
@@ -25,6 +50,9 @@ def _empty_features() -> pd.DataFrame:
             "first_active_date",
             "last_active_date",
             "days_since_last_active",
+            "lifetime_returned_flag",
+            # DEPRECATED: repeat_usage_flag is an alias for lifetime_returned_flag.
+            # Remove in Sprint 7.
             "repeat_usage_flag",
         ]
     )
@@ -81,10 +109,17 @@ def build_user_features(
         preferred because it records report views by user. ``fact_page_views``
         can be used as a fallback proxy if report-view facts are unavailable.
     dim_user:
-        Optional user dimension used to attach ``user_id`` and ``unique_user``.
+        Optional user dimension. NOT joined into output (privacy restriction).
+        Accepted for API compatibility but its identity columns are not used.
     dim_date:
         Optional date dimension used when facts contain ``date_key`` instead of
         ``date``.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per user_key. Contains only pseudonymous identifiers (user_key).
+        Direct identifiers (user_id, unique_user) are never included.
     """
     if usage_events is None or usage_events.empty:
         return _empty_features()
@@ -145,38 +180,41 @@ def build_user_features(
     feature_df["avg_views_per_active_day"] = feature_df["total_views"].div(
         feature_df["active_days"].replace(0, np.nan)
     )
-    feature_df["repeat_usage_flag"] = (
+
+    # CANONICAL: lifetime_returned_flag — True when active_days > 1.
+    # Definition: user has at least one active day strictly after their first.
+    # This is a lifetime-history attribute (NOT a windowed returning-user metric).
+    # See src/analytics/engagement_definitions.py.
+    feature_df["lifetime_returned_flag"] = (
         feature_df["active_days"].fillna(0).gt(1)
-        | feature_df["total_views"].fillna(0).gt(1)
     )
 
-    if dim_user is not None and not dim_user.empty:
-        user_lookup_cols = [
-            column
-            for column in ["user_key", "user_id", "unique_user"]
-            if column in dim_user.columns
-        ]
-        if user_col in user_lookup_cols:
-            feature_df = feature_df.merge(
-                dim_user[user_lookup_cols].drop_duplicates(subset=[user_col]),
-                on=user_col,
-                how="left",
-            )
+    # DEPRECATED: repeat_usage_flag — alias for lifetime_returned_flag.
+    # Old definition was ambiguous: (active_days > 1) OR (total_views > 1).
+    # New definition: active_days > 1 only. Retained for backwards compatibility.
+    # Remove in Sprint 7.
+    warnings.warn(
+        "repeat_usage_flag is deprecated. Use lifetime_returned_flag instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    feature_df["repeat_usage_flag"] = feature_df["lifetime_returned_flag"]
 
+    # Ensure user_key column is set correctly (never user_id in output).
     if user_col == "user_key" and "user_key" not in feature_df.columns:
         feature_df["user_key"] = feature_df[user_col]
-    if user_col == "user_id" and "user_id" not in feature_df.columns:
-        feature_df["user_id"] = feature_df[user_col]
-
-    for column in ["user_key", "user_id", "unique_user"]:
-        if column not in feature_df.columns:
-            feature_df[column] = np.nan
+    elif user_col != "user_key":
+        # Input used user_id as fallback; create a placeholder user_key column.
+        feature_df["user_key"] = feature_df[user_col]
 
     for column in ["first_active_date", "last_active_date"]:
         feature_df[column] = pd.to_datetime(feature_df[column], errors="coerce").dt.date
 
     output_columns = _empty_features().columns.tolist()
     feature_df = feature_df.reindex(columns=output_columns)
+
+    # Privacy guard: ensure no prohibited columns leaked into output.
+    validate_no_direct_identifiers(feature_df, context="user_features output")
 
     return feature_df.sort_values(["total_views", "user_key"], ascending=[False, True]).reset_index(
         drop=True

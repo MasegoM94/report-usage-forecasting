@@ -50,12 +50,17 @@ OUTPUT_PATHS = {
     "forecasts": Path("outputs/forecasts/report_view_forecasts_latest.csv"),
     "metrics": Path("outputs/metrics/report_view_metrics_latest.csv"),
     "report_features": Path("outputs/metrics/report_features.csv"),
-    "user_features": Path("outputs/metrics/user_features.csv"),
+    # PRIVACY: user_features.csv and user_segments.csv are NOT loaded into the app.
+    # These files contain user_key (pseudonymous) but must not flow into app memory
+    # because the app also has access to dim_user which would allow re-identification.
+    # user_features: Path("outputs/metrics/user_features.csv"),   # excluded — privacy
+    # user_segments: Path("outputs/segments/user_segments.csv"),  # excluded — privacy
     "segments": Path("outputs/segments/report_segments.csv"),
-    "user_segments": Path("outputs/segments/user_segments.csv"),
     "diagnostics": Path("outputs/diagnostics/report_diagnostics.csv"),
     "insights": Path("outputs/insights/report_ai_insights.json"),
-    "dim_user": Path("data/processed/dim_user.csv"),
+    # PRIVACY: dim_user.csv maps user_key -> email (direct identifier).
+    # It is RESTRICTED IDENTITY DATA and must NOT be loaded into the app.
+    # dim_user: Path("data/processed/dim_user.csv"),  # excluded — restricted identity data
     "dim_report": Path("data/processed/dim_report.csv"),
     "fact_report_views": Path("data/processed/fact_report_views.csv"),
 }

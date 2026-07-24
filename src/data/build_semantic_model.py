@@ -271,6 +271,10 @@ def main() -> None:
     raw_tables = load_raw_tables(paths["raw_path"])
 
     dim_date = build_dim_date(raw_tables["dates"])
+    # RESTRICTED IDENTITY DATA: dim_user maps user_key -> user_id (email) -> unique_user.
+    # Must NOT be joined into public analytics outputs.
+    # Must NOT be loaded into Streamlit.
+    # Access requires explicit data-governance approval.
     dim_user = build_dim_user(raw_tables["users"])
     dim_report = build_dim_report(raw_tables["reports"], raw_tables["report_archetypes"])
     dim_page = build_dim_page(raw_tables["report_pages"])

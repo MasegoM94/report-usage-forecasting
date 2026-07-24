@@ -294,6 +294,9 @@ def build_report_features(
                     user_level_views=("view_count", "sum"),
                 )
             )
+            # DEPRECATED: repeat_rate uses lifetime view_count > 1 definition (repeat-view semantics).
+            # Replacement: returning_user_share_28d (Sprint 6, date-based windowed returning user).
+            # Column retained for backwards compatibility. Do not use in Sprint 6+ outputs.
             repeat["repeat_rate"] = repeat["repeat_users"].div(
                 repeat["unique_users"].replace(0, np.nan)
             )

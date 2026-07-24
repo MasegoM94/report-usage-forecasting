@@ -1,4 +1,18 @@
-"""Rule-based user segmentation helpers."""
+"""Rule-based user segmentation helpers.
+
+Privacy note
+------------
+Outputs contain only ``user_key`` (surrogate identifier).
+Direct identifiers (user_id, unique_user) are never included.
+See src/analytics/privacy_policy.py.
+
+Engagement definitions
+----------------------
+one_time segment: user has exactly 1 distinct active day (lifetime).
+    CANONICAL: one_active_day_user_flag = (active_days == 1)
+    DEPRECATED definition removed: OR (total_views == 1).
+    See src/analytics/engagement_definitions.py.
+"""
 
 from __future__ import annotations
 
@@ -13,24 +27,23 @@ def _quantile(series: pd.Series, q: float) -> float:
     return float(numeric.quantile(q))
 
 
-def _identifier_columns(features: pd.DataFrame) -> list[str]:
-    """Return the available user identifier columns for segment outputs."""
-    return [column for column in ["user_key", "user_id", "unique_user"] if column in features.columns]
-
-
 def build_user_segments(user_features: pd.DataFrame) -> pd.DataFrame:
     """Assign business-friendly rule-based segments to users.
 
     Segment labels are ``power``, ``regular``, ``casual``, and ``one_time``.
     Quantiles are used because fixed business thresholds are not yet defined.
+
+    Privacy: only user_key is included in the output — no direct identifiers.
     """
     if user_features is None or user_features.empty:
         return pd.DataFrame(
-            columns=["user_key", "user_id", "unique_user", "user_segment", "segment_reason"]
+            columns=["user_key", "user_segment", "segment_reason"]
         )
 
     features = user_features.copy()
-    id_columns = _identifier_columns(features)
+
+    # Only include user_key in the output — never user_id or unique_user.
+    id_columns = ["user_key"] if "user_key" in features.columns else []
 
     total_views_q50 = _quantile(features["total_views"], 0.50)
     total_views_q75 = _quantile(features["total_views"], 0.75)
@@ -43,13 +56,10 @@ def build_user_segments(user_features: pd.DataFrame) -> pd.DataFrame:
         active_days = row.get("active_days")
         distinct_reports = row.get("distinct_reports")
 
-        one_time = (
-            pd.notna(active_days)
-            and active_days == 1
-        ) or (
-            pd.notna(total_views)
-            and total_views == 1
-        )
+        # CANONICAL: one_active_day_user_flag — active on exactly 1 distinct date (lifetime).
+        # DEPRECATED definition removed: OR (total_views == 1). See engagement_definitions.py.
+        one_active_day = pd.notna(active_days) and active_days == 1
+
         power = (
             pd.notna(total_views)
             and pd.notna(distinct_reports)
@@ -68,9 +78,9 @@ def build_user_segments(user_features: pd.DataFrame) -> pd.DataFrame:
             )
         )
 
-        if one_time:
+        if one_active_day:
             segment = "one_time"
-            reason = "User has only one active day or one recorded view."
+            reason = "User has exactly one active day."
         elif power:
             segment = "power"
             reason = "Total views and distinct reports are both in the top quartile."

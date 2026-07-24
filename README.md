@@ -425,6 +425,57 @@ For environments where multiple pipeline processes may run concurrently, replace
 - Orchestrator-enforced mutual exclusion (Airflow, Prefect, Dagster, etc.)
 - An explicit cross-process file-locking library (`filelock`, `fcntl.flock`)
 
+## User Analytics Privacy
+
+This project applies privacy-by-design to all user-level analytics outputs.
+
+### Restricted identity layer
+
+`data/processed/dim_user.csv` maps `user_key` to `user_id` (email address) and `unique_user` (display name). This file is **restricted identity data**:
+
+- Must not be joined into any public analytics output.
+- Must not be loaded into the Streamlit app.
+- Must not be used in any GenAI context.
+- Access requires explicit data-governance approval.
+
+### Privacy-safe analytics layer
+
+`outputs/metrics/user_features.csv` and `outputs/segments/user_segments.csv` contain only `user_key` (a stable surrogate key, e.g. `UK_0001`). No email addresses or display names are included.
+
+These files are marked **pseudonymous — user_key only**.
+
+### Small-group suppression
+
+Distribution metrics (e.g. median views per user) are suppressed when `unique_users < 5`. Suppressed values are set to `None` (null), never `0`. The columns `privacy_suppressed`, `privacy_suppression_reason`, and `suppressed_fields` are added to suppressed outputs.
+
+### Streamlit app
+
+The Streamlit reviewer app does not load user-level behavioural files (`user_features.csv`, `user_segments.csv`, `dim_user.csv`). It operates on report-level aggregates only.
+
+### GenAI insight layer
+
+The GenAI layer receives only report-level aggregates. No user identifiers are passed to any LLM prompt.
+
+### Canonical engagement definitions
+
+See `src/analytics/engagement_definitions.py` for the authoritative definitions of all engagement metrics.
+
+Key definitions:
+- **Returning user**: active on at least 2 distinct dates within a window.
+- **One-time user**: active on exactly 1 distinct date within a window.
+- **Repeat-view user**: more than 1 total view within a window (regardless of dates).
+- **Lifetime returned flag**: user has any activity after their first-ever use date.
+
+### Deprecated fields
+
+The following fields are deprecated and must not be used in Sprint 6+ outputs:
+
+| Deprecated field | Replacement |
+|---|---|
+| `repeat_rate` | `returning_user_share_28d` |
+| `is_repeat_user` | `lifetime_returned_flag` |
+| `repeat_usage_flag` | `lifetime_returned_flag` |
+
 ## Roadmap
 
 1. Improve forecast evaluation with rolling-origin backtesting.

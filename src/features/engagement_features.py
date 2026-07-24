@@ -133,9 +133,15 @@ def build_user_engagement_features(
         on=["report_id", "user_id"],
         how="left",
     )
-    user_daily_views["is_repeat_user"] = (
+    # DEPRECATED: is_repeat_user uses lifetime_returned semantics (date > first_view_date).
+    # Canonical replacement: lifetime_returned_flag.
+    # For windowed returning-user metrics use returning_user_count_28d (Sprint 6).
+    # Renamed to lifetime_returned_flag internally; is_repeat_user kept as alias below.
+    user_daily_views["lifetime_returned_flag"] = (
         user_daily_views["date"] > user_daily_views["first_view_date"]
     )
+    # DEPRECATED alias — retained so internal aggregation below continues to work.
+    user_daily_views["is_repeat_user"] = user_daily_views["lifetime_returned_flag"]
 
     repeat_users_daily = (
         user_daily_views.groupby(["date", "report_id"], as_index=False)
