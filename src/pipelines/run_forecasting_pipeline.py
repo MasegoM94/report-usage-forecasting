@@ -2060,6 +2060,48 @@ def run_production_pipeline(
         if path:
             print(f"Saved [monitoring_{name}]: {path.relative_to(project_root)}")
 
+    # Step 9 (pre-5): Report-level model-health summary.
+    # Consolidates all component diagnostics into one row per report.
+    try:
+        from src.models.model_health import (
+            build_report_model_diagnostics,
+            persist_report_model_diagnostics,
+        )
+
+        def _load_diag(fname):
+            p = project_root / "outputs" / "diagnostics" / fname
+            try:
+                return pd.read_csv(p) if p.exists() else pd.DataFrame()
+            except Exception:
+                return pd.DataFrame()
+
+        _det_path = project_root / "outputs" / "metrics" / "report_performance_deterioration.csv"
+        _det_df = pd.read_csv(_det_path) if _det_path.exists() else pd.DataFrame()
+
+        _mh_df = build_report_model_diagnostics(
+            production_forecast_df=production_df,
+            training_acf_df=_load_diag("training_autocorrelation_diagnostics_latest.csv"),
+            backtest_acf_summary_df=_load_diag("backtest_autocorrelation_summary_latest.csv"),
+            production_acf_df=_load_diag("production_autocorrelation_diagnostics_latest.csv"),
+            training_bias_df=_load_diag("training_bias_stability_diagnostics_latest.csv"),
+            backtest_bias_summary_df=_load_diag("backtest_bias_stability_summary_latest.csv"),
+            production_bias_df=_load_diag("production_bias_stability_diagnostics_latest.csv"),
+            training_outlier_df=_load_diag("training_outlier_distribution_diagnostics_latest.csv"),
+            backtest_outlier_summary_df=_load_diag("backtest_outlier_distribution_summary_latest.csv"),
+            production_outlier_df=_load_diag("production_outlier_distribution_diagnostics_latest.csv"),
+            backtest_interval_summary_df=_load_diag("backtest_interval_calibration_summary_latest.csv"),
+            production_interval_df=_load_diag("production_interval_calibration_latest.csv"),
+            deterioration_df=_det_df,
+            diagnostic_run_id=run_id,
+        )
+        _mh_path = persist_report_model_diagnostics(_mh_df, project_root)
+        if _mh_path:
+            print(f"Saved [model_health]: {_mh_path.relative_to(project_root)}")
+    except Exception as _mh_exc:
+        print(f"Warning: model health summary failed: {_mh_exc}")
+        _mh_path = None
+        _mh_df = pd.DataFrame()
+
     return {
         "run_id": run_id,
         "input_path": input_path,
