@@ -619,10 +619,12 @@ class TestDeterministicOutput:
 
 class TestBuildAllTables:
 
-    def test_all_four_keys_present(self):
+    def test_all_five_keys_present(self):
         df = _df(_row())
         tables = build_production_performance_tables(df)
-        assert set(tables.keys()) == {"by_run", "by_report", "by_horizon", "by_model"}
+        assert set(tables.keys()) == {
+            "by_run", "by_report", "by_horizon", "by_model", "deterioration"
+        }
 
     def test_empty_input_all_tables_empty(self):
         df = _df(_row()).iloc[0:0]

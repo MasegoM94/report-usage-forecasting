@@ -542,7 +542,7 @@ def realized_performance_by_model(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def build_production_performance_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Build all four monitoring tables from the realized forecast history.
+    """Build all monitoring tables from the realized forecast history.
 
     Parameters
     ----------
@@ -552,16 +552,22 @@ def build_production_performance_tables(df: pd.DataFrame) -> dict[str, pd.DataFr
     Returns
     -------
     dict with keys:
-        ``by_run``     → realized_performance_by_run DataFrame
-        ``by_report``  → realized_performance_by_report DataFrame
-        ``by_horizon`` → realized_performance_by_horizon DataFrame
-        ``by_model``   → realized_performance_by_model DataFrame
+        ``by_run``        → realized_performance_by_run DataFrame
+        ``by_report``     → realized_performance_by_report DataFrame
+        ``by_horizon``    → realized_performance_by_horizon DataFrame
+        ``by_model``      → realized_performance_by_model DataFrame
+        ``deterioration`` → cross-run deterioration report DataFrame
     """
+    from src.monitoring.deterioration import compute_deterioration_report
+
+    by_run    = realized_performance_by_run(df)
+    by_report = realized_performance_by_report(df)
     return {
-        "by_run":     realized_performance_by_run(df),
-        "by_report":  realized_performance_by_report(df),
-        "by_horizon": realized_performance_by_horizon(df),
-        "by_model":   realized_performance_by_model(df),
+        "by_run":        by_run,
+        "by_report":     by_report,
+        "by_horizon":    realized_performance_by_horizon(df),
+        "by_model":      realized_performance_by_model(df),
+        "deterioration": compute_deterioration_report(by_run, by_report),
     }
 
 
@@ -594,10 +600,11 @@ def save_production_performance(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     name_map = {
-        "by_run":     "realized_performance_by_run.csv",
-        "by_report":  "realized_performance_by_report.csv",
-        "by_horizon": "realized_performance_by_horizon.csv",
-        "by_model":   "realized_performance_by_model.csv",
+        "by_run":        "realized_performance_by_run.csv",
+        "by_report":     "realized_performance_by_report.csv",
+        "by_horizon":    "realized_performance_by_horizon.csv",
+        "by_model":      "realized_performance_by_model.csv",
+        "deterioration": "deterioration_report.csv",
     }
 
     paths: dict[str, Optional[Path]] = {}
