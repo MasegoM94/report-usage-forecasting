@@ -2001,6 +2001,27 @@ def run_production_pipeline(
         print(f"Warning: bias stability diagnostics failed: {_bias_exc}")
         _bias_paths = {}
 
+    # Step 9 (pre-3): Outlier and distribution diagnostics.
+    try:
+        from src.models.outlier_distribution_diagnostics import (
+            build_training_outlier_distribution_diagnostics,
+            build_backtest_outlier_distribution_by_fold,
+            build_backtest_outlier_distribution_summary,
+            build_production_outlier_distribution_diagnostics,
+            persist_outlier_distribution_diagnostics,
+        )
+        _tr_outlier = build_training_outlier_distribution_diagnostics(_tr_res_df, diagnostic_run_id=run_id)
+        _bt_fold_outlier = build_backtest_outlier_distribution_by_fold(_bt_res_df, evaluation_run_id=run_id) if not _bt_res_df.empty else pd.DataFrame()
+        _bt_sum_outlier = build_backtest_outlier_distribution_summary(_bt_fold_outlier, evaluation_run_id=run_id)
+        _prod_outlier = build_production_outlier_distribution_diagnostics(_prod_res_df, evaluation_run_id=run_id) if not _prod_res_df.empty else pd.DataFrame()
+        _outlier_paths = persist_outlier_distribution_diagnostics(_tr_outlier, _bt_fold_outlier, _bt_sum_outlier, _prod_outlier, project_root)
+        for name, path in _outlier_paths.items():
+            if path:
+                print(f"Saved [outlier_{name}]: {path.relative_to(project_root)}")
+    except Exception as _outlier_exc:
+        print(f"Warning: outlier/distribution diagnostics failed: {_outlier_exc}")
+        _outlier_paths = {}
+
     # Step 9: Aggregate production performance monitoring tables.
     # Runs after realized history is updated so the tables always reflect the
     # latest realized rows.  Written to outputs/monitoring/ as CSV overwrites
