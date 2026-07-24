@@ -88,6 +88,37 @@ class ModelResult:
         ``"failed"`` when an exception prevented forecasting.
     error_message:
         Exception text when ``fit_status == "failed"``; ``None`` otherwise.
+
+    Training-residual fields
+    ------------------------
+    All arrays are aligned: ``training_actual[i]``, ``training_fitted[i]``,
+    ``training_residuals[i]``, and ``training_residual_dates[i]`` refer to the
+    same in-sample observation.  Only rows where both actual and fitted values
+    are finite are included; initial observations that the model cannot fit
+    (e.g. the first ``d`` differences in an ARIMA, or the first ``m`` lags in
+    seasonal naïve) are excluded and their count is implied by
+    ``training_observation_count - fitted_observation_count``.
+
+    residual = actual - fitted  (positive when the model under-forecasts)
+
+    residual_extraction_status:
+        ``"ok"``          — arrays populated and validated.
+        ``"unavailable"`` — model type has no well-defined in-sample fitted
+                            rule (marked intentionally, not a bug).
+        ``"failed"``      — extraction was attempted but raised an exception;
+                            forecast is still valid.
+    residual_extraction_reason:
+        Human-readable explanation when status is not ``"ok"``; ``None`` when
+        status is ``"ok"``.
+    training_observation_count:
+        Total observations in the training series fed to the model.
+        ``None`` when the model failed to fit.
+    fitted_observation_count:
+        Number of in-sample positions where a finite fitted value exists
+        (= ``len(training_actual)``).
+    residual_observation_count:
+        Number of finite residuals (always equal to ``fitted_observation_count``
+        when status is ``"ok"``).
     """
     model_name: str
     forecast: Optional[pd.Series]
@@ -99,6 +130,16 @@ class ModelResult:
     model_metadata: dict = field(default_factory=dict)
     fit_status: str = "ok"
     error_message: Optional[str] = None
+    # Training-residual fields (nullable)
+    training_actual: Optional[np.ndarray] = None
+    training_fitted: Optional[np.ndarray] = None
+    training_residuals: Optional[np.ndarray] = None
+    training_residual_dates: Optional[pd.DatetimeIndex] = None
+    residual_extraction_status: str = "unavailable"
+    residual_extraction_reason: Optional[str] = None
+    training_observation_count: Optional[int] = None
+    fitted_observation_count: Optional[int] = None
+    residual_observation_count: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +186,74 @@ def _failed(model_name: str, exc: Exception) -> ModelResult:
         model_metadata={},
         fit_status="failed",
         error_message=f"{type(exc).__name__}: {exc}",
+        residual_extraction_status="unavailable",
+        residual_extraction_reason="model failed to fit",
     )
+
+
+# ---------------------------------------------------------------------------
+# Training-residual extraction helpers
+# ---------------------------------------------------------------------------
+
+def _residuals_from_arrays(
+    actual: np.ndarray,
+    fitted: np.ndarray,
+    dates: pd.DatetimeIndex,
+    training_observation_count: int,
+) -> dict:
+    """Filter to rows where both actual and fitted are finite, compute residuals.
+
+    Returns a dict of keyword arguments ready to merge into ModelResult.
+    """
+    actual = np.asarray(actual, dtype=float)
+    fitted = np.asarray(fitted, dtype=float)
+    residuals = actual - fitted
+    mask = np.isfinite(actual) & np.isfinite(fitted) & np.isfinite(residuals)
+    valid_actual = actual[mask]
+    valid_fitted = fitted[mask]
+    valid_residuals = residuals[mask]
+    valid_dates = dates[mask]
+    return {
+        "training_actual": valid_actual,
+        "training_fitted": valid_fitted,
+        "training_residuals": valid_residuals,
+        "training_residual_dates": valid_dates,
+        "residual_extraction_status": "ok",
+        "residual_extraction_reason": None,
+        "training_observation_count": training_observation_count,
+        "fitted_observation_count": int(mask.sum()),
+        "residual_observation_count": int(np.isfinite(valid_residuals).sum()),
+    }
+
+
+def _residuals_unavailable(reason: str, training_observation_count: int) -> dict:
+    """Return residual fields for models where in-sample fitted values are undefined."""
+    return {
+        "training_actual": None,
+        "training_fitted": None,
+        "training_residuals": None,
+        "training_residual_dates": None,
+        "residual_extraction_status": "unavailable",
+        "residual_extraction_reason": reason,
+        "training_observation_count": training_observation_count,
+        "fitted_observation_count": None,
+        "residual_observation_count": None,
+    }
+
+
+def _residuals_extraction_failed(reason: str, training_observation_count: int) -> dict:
+    """Return residual fields when extraction was attempted but raised."""
+    return {
+        "training_actual": None,
+        "training_fitted": None,
+        "training_residuals": None,
+        "training_residual_dates": None,
+        "residual_extraction_status": "failed",
+        "residual_extraction_reason": reason,
+        "training_observation_count": training_observation_count,
+        "fitted_observation_count": None,
+        "residual_observation_count": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +276,16 @@ def forecast_naive(
     try:
         _validate_training_series(training_series)
         idx = _forecast_index(training_series, horizon)
-        last_val = float(training_series.iloc[-1])
+        y = training_series.to_numpy(dtype=float)
+        last_val = float(y[-1])
         raw = _as_series(np.full(horizon, last_val), idx, "forecast")
+        # In-sample: fitted[t] = y[t-1]; valid for t >= 1 (first obs excluded)
+        resid_kwargs = _residuals_from_arrays(
+            actual=y[1:],
+            fitted=y[:-1],
+            dates=training_series.index[1:],
+            training_observation_count=len(y),
+        )
         return ModelResult(
             model_name="naive",
             forecast=_clip(raw),
@@ -180,6 +296,7 @@ def forecast_naive(
             upper_bound_raw=None,
             model_metadata={"lag": 1, "last_observed": last_val},
             fit_status="ok",
+            **resid_kwargs,
         )
     except Exception as exc:
         return _failed("naive", exc)
@@ -223,6 +340,31 @@ def forecast_seasonal_naive(
             fallback = False
 
         raw = _as_series(values, idx, "forecast")
+
+        # In-sample fitted: fitted[t] = y[t-m] for t >= m.
+        # When fallback (series shorter than m), use naive rule: fitted[t] = y[t-1].
+        n = len(y)
+        if fallback:
+            resid_kwargs = _residuals_from_arrays(
+                actual=y[1:],
+                fitted=y[:-1],
+                dates=training_series.index[1:],
+                training_observation_count=n,
+            )
+        elif n > seasonal_period:
+            resid_kwargs = _residuals_from_arrays(
+                actual=y[seasonal_period:],
+                fitted=y[:-seasonal_period],
+                dates=training_series.index[seasonal_period:],
+                training_observation_count=n,
+            )
+        else:
+            # Exactly n == seasonal_period: no valid in-sample observation
+            resid_kwargs = _residuals_unavailable(
+                reason="training length equals seasonal_period; no valid in-sample lag",
+                training_observation_count=n,
+            )
+
         return ModelResult(
             model_name=_name,
             forecast=_clip(raw),
@@ -233,6 +375,7 @@ def forecast_seasonal_naive(
             upper_bound_raw=None,
             model_metadata={"seasonal_period": seasonal_period, "fallback_to_naive": fallback},
             fit_status="ok",
+            **resid_kwargs,
         )
     except Exception as exc:
         return _failed(_name, exc)
@@ -264,9 +407,35 @@ def forecast_moving_average(
             raise ValueError(f"'window' must be a positive integer, got {window!r}.")
         _validate_training_series(training_series)
         idx = _forecast_index(training_series, horizon)
+        y = training_series.to_numpy(dtype=float)
         effective_window = min(window, len(training_series))
-        avg = float(training_series.iloc[-effective_window:].mean())
+        avg = float(y[-effective_window:].mean())
         raw = _as_series(np.full(horizon, avg), idx, "forecast")
+
+        # In-sample one-step fitted: fitted[t] = mean(y[t-w : t]) for t >= w.
+        # Observations before position `effective_window` are excluded (insufficient history).
+        n = len(y)
+        w = effective_window
+        if n > w:
+            fitted = np.array(
+                [y[t - w: t].mean() for t in range(w, n)],
+                dtype=float,
+            )
+            resid_kwargs = _residuals_from_arrays(
+                actual=y[w:],
+                fitted=fitted,
+                dates=training_series.index[w:],
+                training_observation_count=n,
+            )
+        else:
+            resid_kwargs = _residuals_unavailable(
+                reason=(
+                    f"training length ({n}) <= effective_window ({w}); "
+                    "no observations with a full prior window"
+                ),
+                training_observation_count=n,
+            )
+
         return ModelResult(
             model_name="moving_average",
             forecast=_clip(raw),
@@ -281,6 +450,7 @@ def forecast_moving_average(
                 "moving_average_value": avg,
             },
             fit_status="ok",
+            **resid_kwargs,
         )
     except Exception as exc:
         return _failed("moving_average", exc)
@@ -363,6 +533,33 @@ def forecast_ets(
             lo_raw = None
             hi_raw = None
 
+        # Capture scalar metadata before releasing the fit object
+        aic_val  = float(fit.aic)
+        bic_val  = float(fit.bic)
+        converged_val = bool(
+            fit.mle_retvals.get("converged", True)
+            if hasattr(fit, "mle_retvals") and fit.mle_retvals
+            else True
+        )
+
+        # Extract in-sample fitted values from the ETS result object.
+        try:
+            fitted_vals = np.asarray(fit.fittedvalues, dtype=float)
+            actual_vals = y.to_numpy(dtype=float)
+            resid_kwargs = _residuals_from_arrays(
+                actual=actual_vals,
+                fitted=fitted_vals,
+                dates=training_series.index,
+                training_observation_count=len(actual_vals),
+            )
+        except Exception as exc_r:
+            resid_kwargs = _residuals_extraction_failed(
+                reason=f"{type(exc_r).__name__}: {exc_r}",
+                training_observation_count=len(y),
+            )
+        # Release the fitted model object — only extracted arrays are needed
+        del fit
+
         return ModelResult(
             model_name=_name,
             forecast=_clip(raw),
@@ -377,15 +574,14 @@ def forecast_ets(
                 "seasonal": "add" if use_seasonal else None,
                 "seasonal_periods": seasonal_period if use_seasonal else None,
                 "requested_seasonal_period": seasonal_period,
-                "aic": float(fit.aic),
-                "bic": float(fit.bic),
-                "converged": bool(fit.mle_retvals.get("converged", True)
-                                  if hasattr(fit, "mle_retvals") and fit.mle_retvals
-                                  else True),
+                "aic": aic_val,
+                "bic": bic_val,
+                "converged": converged_val,
                 "fallback_no_seasonal": not use_seasonal,
                 "prediction_interval_alpha": alpha,
             },
             fit_status="converged",
+            **resid_kwargs,
         )
     except Exception as exc:
         return _failed(_name, exc)
@@ -481,6 +677,28 @@ def forecast_auto_arima(
         except Exception:
             bic_val = float("nan")
 
+        # Extract in-sample fitted values via the underlying statsmodels result.
+        # The statsmodels ARIMA result aligns fittedvalues to the original index;
+        # initial observations consumed by differencing produce NaN which the
+        # _residuals_from_arrays helper filters out automatically.
+        try:
+            sm_res = model.arima_res_
+            fitted_vals = np.asarray(sm_res.fittedvalues, dtype=float)
+            actual_vals = y.to_numpy(dtype=float)
+            resid_kwargs = _residuals_from_arrays(
+                actual=actual_vals,
+                fitted=fitted_vals,
+                dates=training_series.index,
+                training_observation_count=len(actual_vals),
+            )
+        except Exception as exc_r:
+            resid_kwargs = _residuals_extraction_failed(
+                reason=f"{type(exc_r).__name__}: {exc_r}",
+                training_observation_count=len(y),
+            )
+        # Release the model object — no serialisation of fitted models
+        del model
+
         return ModelResult(
             model_name=_name,
             forecast=_clip(raw),
@@ -500,6 +718,7 @@ def forecast_auto_arima(
                 "n_train": len(y),
             },
             fit_status="converged",
+            **resid_kwargs,
         )
     except Exception as exc:
         return _failed(_name, exc)
