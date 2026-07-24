@@ -1970,6 +1970,37 @@ def run_production_pipeline(
         print(f"Warning: autocorrelation diagnostics failed: {_acf_exc}")
         _acf_paths = {}
 
+    # Step 9 (pre-2): Bias and residual-stability diagnostics.
+    # Runs after autocorrelation diagnostics.  Failures are isolated.
+    try:
+        from src.models.bias_stability_diagnostics import (
+            build_training_bias_diagnostics,
+            build_backtest_bias_diagnostics_by_fold,
+            build_backtest_bias_summary,
+            build_production_bias_diagnostics,
+            persist_bias_stability_diagnostics,
+        )
+        _tr_bias = build_training_bias_diagnostics(_tr_res_df, diagnostic_run_id=run_id)
+        _bt_fold_bias = build_backtest_bias_diagnostics_by_fold(
+            _bt_res_df, evaluation_run_id=run_id
+        ) if not _bt_res_df.empty else pd.DataFrame()
+        _bt_sum_bias = build_backtest_bias_summary(
+            _bt_fold_bias, _bt_res_df if not _bt_res_df.empty else None,
+            evaluation_run_id=run_id,
+        )
+        _prod_bias = build_production_bias_diagnostics(
+            _prod_res_df, evaluation_run_id=run_id
+        ) if not _prod_res_df.empty else pd.DataFrame()
+        _bias_paths = persist_bias_stability_diagnostics(
+            _tr_bias, _bt_fold_bias, _bt_sum_bias, _prod_bias, project_root
+        )
+        for name, path in _bias_paths.items():
+            if path:
+                print(f"Saved [bias_{name}]: {path.relative_to(project_root)}")
+    except Exception as _bias_exc:
+        print(f"Warning: bias stability diagnostics failed: {_bias_exc}")
+        _bias_paths = {}
+
     # Step 9: Aggregate production performance monitoring tables.
     # Runs after realized history is updated so the tables always reflect the
     # latest realized rows.  Written to outputs/monitoring/ as CSV overwrites
