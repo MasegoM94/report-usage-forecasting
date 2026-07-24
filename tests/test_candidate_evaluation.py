@@ -103,12 +103,13 @@ def _run(
     candidate_periods: tuple = SEASONAL_CANDIDATES,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     cfg = _cfg(min_train=min_train, n_folds=n_folds)
-    return evaluate_candidates_across_folds(
+    preds, metrics, _tr = evaluate_candidates_across_folds(
         report_id, series, cfg,
         candidate_periods=candidate_periods,
         include_ets=include_ets,
         include_arima=include_arima,
     )
+    return preds, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +495,7 @@ class TestFailureIsolation:
         # Instead: inject a very long series but with tiny min_train so m=90
         # passes the gate, then check ARIMA handles it gracefully.
         series_long = _make_seasonal_series(400, period=7, seed=8)
-        preds, metrics = evaluate_candidates_across_folds(
+        preds, metrics, _ = evaluate_candidates_across_folds(
             "R_FAIL",
             series_long,
             BacktestConfig(
@@ -542,7 +543,7 @@ class TestFailureIsolation:
             pytest.skip("pmdarima not installed")
         # 400 days: training ≥ 280 → both m=7 and m=90 pass history gate
         series = _make_seasonal_series(400, period=7, seed=8)
-        preds, metrics = evaluate_candidates_across_folds(
+        preds, metrics, _ = evaluate_candidates_across_folds(
             "R_ISO",
             series,
             BacktestConfig(

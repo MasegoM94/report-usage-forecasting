@@ -1531,7 +1531,7 @@ def run_candidate_backtest_stage(
     candidate_periods: tuple = None,
     include_ets: bool = True,
     include_arima: bool = True,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, list]:
     """Run candidate-aware rolling backtest evaluation for all eligible reports.
 
     Uses ``evaluate_candidates_across_folds`` (per-fold seasonality profiling)
@@ -1556,6 +1556,10 @@ def run_candidate_backtest_stage(
         ``candidate_summary`` has one row per (report_id, model_family, candidate_m).
         ``selection`` has ``selected_model_family``, ``selected_m`` etc. as separate
         columns — ready for ``build_production_forecast``.
+    training_residual_records : list[dict]
+        Per-(report, fold, candidate) training-residual records from
+        ``evaluate_candidates_across_folds``.  Pass to
+        ``build_training_residual_dataset`` in ``src.models.residual_datasets``.
     """
     from src.models.backtest_evaluation import BacktestConfig, evaluate_candidates_across_folds
     from src.models.model_summary import summarise_candidate_performance
@@ -1569,10 +1573,11 @@ def run_candidate_backtest_stage(
 
     all_predictions: list[pd.DataFrame] = []
     all_fold_metrics: list[pd.DataFrame] = []
+    all_tr_records: list[dict] = []
 
     for rid, series in eligible_series.items():
         try:
-            preds, fmetrics = evaluate_candidates_across_folds(
+            preds, fmetrics, tr_records = evaluate_candidates_across_folds(
                 rid, series, backtest_config,
                 candidate_periods=candidate_periods,
                 include_ets=include_ets,
@@ -1580,18 +1585,19 @@ def run_candidate_backtest_stage(
             )
             all_predictions.append(preds)
             all_fold_metrics.append(fmetrics)
+            all_tr_records.extend(tr_records)
         except Exception:
             pass
 
     if not all_fold_metrics:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), []
 
     predictions = pd.concat(all_predictions, ignore_index=True)
     fold_metrics = pd.concat(all_fold_metrics, ignore_index=True)
     candidate_summary = summarise_candidate_performance(fold_metrics)
     selection = select_candidate_models(candidate_summary)
 
-    return predictions, fold_metrics, candidate_summary, selection
+    return predictions, fold_metrics, candidate_summary, selection, all_tr_records
 
 
 def save_production_outputs(
@@ -1826,9 +1832,11 @@ def run_production_pipeline(
     # Use candidate-aware stage: evaluates each (model_family, candidate_m)
     # combination per fold and selects jointly, so selected_m is always
     # available for period-preserving production refitting.
-    predictions, fold_metrics, model_summary, selection = run_candidate_backtest_stage(
-        eligible_series,
-        backtest_config=backtest_config,
+    predictions, fold_metrics, model_summary, selection, training_residual_records = (
+        run_candidate_backtest_stage(
+            eligible_series,
+            backtest_config=backtest_config,
+        )
     )
 
     # Steps 4–5: Refit on full history → generate production forecasts.
@@ -1892,7 +1900,34 @@ def run_production_pipeline(
         f"(of {len(realized_rows) + n_skipped} candidates)"
     )
 
-    # Step 8: Aggregate production performance monitoring tables.
+    # Step 8: Build canonical residual and forecast-error diagnostic datasets.
+    # Runs after backtest predictions and realized history have been written.
+    # Failures are isolated — they do not abort the production run.
+    try:
+        from src.models.residual_datasets import persist_residual_datasets
+        name_lookup = {
+            rid: series_dict[rid].name if hasattr(series_dict.get(rid, None), "name") else rid
+            for rid in (series_dict or {})
+        }
+        _diag_paths = persist_residual_datasets(
+            training_residual_records=training_residual_records,
+            backtest_predictions_path=output_paths.get("backtest_predictions"),
+            realized_history_path=(
+                project_root / "outputs" / "metrics" / "realized_forecast_history.csv"
+            ),
+            project_root=project_root,
+            diagnostic_run_id=run_id,
+            evaluation_run_id=run_id,
+            name_lookup=name_lookup,
+        )
+        for name, path in _diag_paths.items():
+            if path:
+                print(f"Saved [diagnostics_{name}]: {path.relative_to(project_root)}")
+    except Exception as _exc:
+        print(f"Warning: residual dataset generation failed: {_exc}")
+        _diag_paths = {}
+
+    # Step 9: Aggregate production performance monitoring tables.
     # Runs after realized history is updated so the tables always reflect the
     # latest realized rows.  Written to outputs/monitoring/ as CSV overwrites
     # (derived views, not append-only history).

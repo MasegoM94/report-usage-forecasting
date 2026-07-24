@@ -183,7 +183,7 @@ class TestWiringCallsUpdateRealizedForecastHistory:
                    return_value=([], [])), \
              patch("src.pipelines.run_forecasting_pipeline.run_candidate_backtest_stage",
                    return_value=(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
-                                 pd.DataFrame(columns=["report_id", "selection_status"]))), \
+                                 pd.DataFrame(columns=["report_id", "selection_status"]), [])), \
              patch("src.models.production_forecast.build_production_forecast",
                    return_value=prod_df), \
              patch("src.pipelines.run_forecasting_pipeline.save_production_outputs",
@@ -224,7 +224,7 @@ class TestWiringCallsUpdateRealizedForecastHistory:
                    return_value=([], [])), \
              patch("src.pipelines.run_forecasting_pipeline.run_candidate_backtest_stage",
                    return_value=(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
-                                 pd.DataFrame(columns=["report_id", "selection_status"]))), \
+                                 pd.DataFrame(columns=["report_id", "selection_status"]), [])), \
              patch("src.models.production_forecast.build_production_forecast",
                    return_value=prod_df), \
              patch("src.pipelines.run_forecasting_pipeline.save_production_outputs",
@@ -367,7 +367,7 @@ class TestReturnDictKeys:
                    return_value=([], [])), \
              patch("src.pipelines.run_forecasting_pipeline.run_candidate_backtest_stage",
                    return_value=(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
-                                 pd.DataFrame(columns=["report_id", "selection_status"]))), \
+                                 pd.DataFrame(columns=["report_id", "selection_status"]), [])), \
              patch("src.models.production_forecast.build_production_forecast",
                    return_value=prod_df), \
              patch("src.pipelines.run_forecasting_pipeline.save_production_outputs",

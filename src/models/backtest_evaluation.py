@@ -687,6 +687,17 @@ def evaluate_candidates_across_folds(
         ``evaluate_models_across_folds``.
         Sorted by (report_id, fold_number, model_name).
 
+    training_residual_records : list[dict]
+        One dict per (fold, candidate) containing the training-residual
+        arrays extracted from ``ModelResult``.  Suitable for passing to
+        ``build_training_residual_dataset`` in
+        ``src.models.residual_datasets``.  The dicts carry:
+        ``report_id``, ``fold_number``, ``training_start``,
+        ``training_cutoff``, ``model_name``, ``model_family``,
+        ``candidate_m``, ``fit_status``, and all residual-extraction
+        fields from ``ModelResult`` (arrays already computed; no fitted
+        model object is retained).
+
     Raises
     ------
     ValueError
@@ -707,6 +718,7 @@ def evaluate_candidates_across_folds(
 
     all_pred_rows: list[dict] = []
     all_metric_rows: list[dict] = []
+    all_tr_records: list[dict] = []
 
     for fold in folds:
         candidates = _build_fold_candidates(
@@ -750,6 +762,34 @@ def evaluate_candidates_across_folds(
             all_pred_rows.extend(pred_rows)
             all_metric_rows.append(metric_row)
 
+            # Collect training-residual fields from ModelResult for diagnostic use.
+            # No model object is retained — arrays were already extracted in the
+            # candidate function before the model was released.
+            train_start = (
+                fold.train_series.index[0]
+                if not fold.train_series.empty
+                else None
+            )
+            all_tr_records.append({
+                "report_id": report_id,
+                "fold_number": fold.fold_number,
+                "training_start": train_start,
+                "training_cutoff": fold.cutoff_date,
+                "model_name": result.model_name,
+                "model_family": spec.model_family,
+                "candidate_m": spec.candidate_m,
+                "fit_status": result.fit_status,
+                "training_actual": result.training_actual,
+                "training_fitted": result.training_fitted,
+                "training_residuals": result.training_residuals,
+                "training_residual_dates": result.training_residual_dates,
+                "residual_extraction_status": result.residual_extraction_status,
+                "residual_extraction_reason": result.residual_extraction_reason,
+                "training_observation_count": result.training_observation_count,
+                "fitted_observation_count": result.fitted_observation_count,
+                "residual_observation_count": result.residual_observation_count,
+            })
+
     if all_pred_rows:
         predictions = pd.DataFrame(all_pred_rows)[_PRED_COLS_EXT]
     else:
@@ -769,4 +809,4 @@ def evaluate_candidates_across_folds(
         ignore_index=True,
     )
 
-    return predictions, fold_metrics
+    return predictions, fold_metrics, all_tr_records
