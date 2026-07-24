@@ -29,11 +29,13 @@ from src.monitoring.production_performance import (
     _HORIZON_COLS,
     _MODEL_COLS,
     _REPORT_COLS,
+    _REPORT_RUN_COLS,
     _RUN_COLS,
     build_production_performance_tables,
     realized_performance_by_horizon,
     realized_performance_by_model,
     realized_performance_by_report,
+    realized_performance_by_report_run,
     realized_performance_by_run,
     save_production_performance,
     validate_realized_history_input,
@@ -619,11 +621,12 @@ class TestDeterministicOutput:
 
 class TestBuildAllTables:
 
-    def test_all_five_keys_present(self):
+    def test_all_six_keys_present(self):
         df = _df(_row())
         tables = build_production_performance_tables(df)
         assert set(tables.keys()) == {
-            "by_run", "by_report", "by_horizon", "by_model", "deterioration"
+            "by_report_run", "by_run", "by_report",
+            "by_horizon", "by_model", "deterioration",
         }
 
     def test_empty_input_all_tables_empty(self):
@@ -631,6 +634,219 @@ class TestBuildAllTables:
         tables = build_production_performance_tables(df)
         for key, tbl in tables.items():
             assert tbl.empty, f"Expected empty table for '{key}'"
+
+
+# ---------------------------------------------------------------------------
+# TestRealizedPerformanceByReportRun
+# ---------------------------------------------------------------------------
+
+
+class TestRealizedPerformanceByReportRun:
+
+    def test_schema(self):
+        df = _df(_row())
+        out = realized_performance_by_report_run(df)
+        assert list(out.columns) == _REPORT_RUN_COLS
+
+    def test_empty_input(self):
+        df = _df(_row()).iloc[0:0]
+        out = realized_performance_by_report_run(df)
+        assert out.empty
+        assert list(out.columns) == _REPORT_RUN_COLS
+
+    def test_one_row_per_report_run(self):
+        """Two reports × two runs → four rows."""
+        rows = []
+        for rid in ["r1", "r2"]:
+            for run in ["run_A", "run_B"]:
+                for step in range(1, 8):
+                    rows.append(_row(run_id=run, report_id=rid, horizon_step=step,
+                                     forecast_date=f"2024-02-{step:02d}"))
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        assert len(out) == 4  # 2 reports × 2 runs
+
+    def test_sorted_by_report_id_then_run_id(self):
+        rows = [
+            _row(run_id="run_B", report_id="r2"),
+            _row(run_id="run_A", report_id="r1"),
+            _row(run_id="run_A", report_id="r2"),
+            _row(run_id="run_B", report_id="r1"),
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        assert list(out["report_id"]) == ["r1", "r1", "r2", "r2"]
+        assert list(out["run_id"])    == ["run_A", "run_B", "run_A", "run_B"]
+
+    def test_fully_realized_true_when_all_steps_present(self):
+        """All 7 steps realized for one report-run → fully_realized=True."""
+        rows = [
+            _row(run_id="run_A", report_id="r1", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 8)
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        assert out.iloc[0]["fully_realized"] == True
+
+    def test_fully_realized_false_when_steps_missing(self):
+        """r2 only has 3 of 7 steps → fully_realized=False."""
+        rows = [
+            _row(run_id="run_A", report_id="r1", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 8)  # r1: all 7 steps
+        ]
+        rows += [
+            _row(run_id="run_A", report_id="r2", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 4)  # r2: only 3 steps
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        r2 = out[out["report_id"] == "r2"].iloc[0]
+        assert r2["fully_realized"] == False
+        assert r2["run_status"] == "partial"
+
+    def test_realization_rate_matches_realized_over_expected(self):
+        """r2 has 3 realized of 7 expected → realization_rate ≈ 0.429."""
+        rows = [
+            _row(run_id="run_A", report_id="r1", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 8)  # r1: 7/7
+        ]
+        rows += [
+            _row(run_id="run_A", report_id="r2", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 4)  # r2: 3/7
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        r2 = out[out["report_id"] == "r2"].iloc[0]
+        assert r2["realized_prediction_count"] == 3
+        assert r2["expected_prediction_count"] == 7
+        assert r2["realization_rate"] == pytest.approx(3 / 7)
+
+    def test_realized_never_exceeds_expected(self):
+        """Realized prediction count must never be greater than expected."""
+        rows = [
+            _row(run_id="run_A", report_id="r1", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 8)
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        for _, row in out.iterrows():
+            assert row["realized_prediction_count"] <= row["expected_prediction_count"]
+
+    def test_comparable_run_true_when_fully_realized_and_enough_obs(self):
+        rows = [
+            _row(run_id="run_A", report_id="r1", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 29)  # 28 steps, default min_observations=10
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        assert out.iloc[0]["comparable_run"] == True
+
+    def test_comparable_run_false_for_partial_run(self):
+        """Only 3 steps realized; expected=28 → realization_rate ≈ 0.11 < 0.90."""
+        rows = [
+            _row(run_id="run_A", report_id="r1",  horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 29)  # r1: all 28
+        ]
+        rows += [
+            _row(run_id="run_A", report_id="r2", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 4)   # r2: only 3/28
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        r2 = out[out["report_id"] == "r2"].iloc[0]
+        assert r2["comparable_run"] == False
+
+    def test_wape_computed_per_report_run(self):
+        """Two reports in same run have different actuals/forecasts → different WAPE."""
+        rows = [
+            # r1: forecast=110, actual=100 → WAPE = 0.10
+            _row(run_id="run_A", report_id="r1", forecast=110, actual=100),
+            # r2: forecast=130, actual=100 → WAPE = 0.30
+            _row(run_id="run_A", report_id="r2", forecast=130, actual=100),
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        r1_wape = out[out["report_id"] == "r1"]["wape"].iloc[0]
+        r2_wape = out[out["report_id"] == "r2"]["wape"].iloc[0]
+        assert r1_wape == pytest.approx(0.10)
+        assert r2_wape == pytest.approx(0.30)
+        assert r1_wape != r2_wape
+
+    def test_bias_computed_per_report_run(self):
+        rows = [
+            _row(run_id="run_A", report_id="r1", forecast=80,  actual=100),  # bias=-20
+            _row(run_id="run_A", report_id="r2", forecast=120, actual=100),  # bias=+20
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        r1_bias = out[out["report_id"] == "r1"]["bias"].iloc[0]
+        r2_bias = out[out["report_id"] == "r2"]["bias"].iloc[0]
+        assert r1_bias == pytest.approx(-20.0)
+        assert r2_bias == pytest.approx(+20.0)
+
+    def test_interval_observation_count_non_nan_bounds(self):
+        rows = [
+            _row(run_id="run_A", report_id="r1",
+                 lower_bound=80.0, upper_bound=120.0),   # has bounds
+            _row(run_id="run_A", report_id="r1",
+                 horizon_step=2, forecast_date="2024-02-02"),  # no bounds (NaN)
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        assert out.iloc[0]["interval_observation_count"] == 1  # only 1 row has bounds
+
+    def test_run_status_complete_and_partial(self):
+        """run_status should be 'complete' for fully realized and 'partial' otherwise."""
+        rows_full = [
+            _row(run_id="run_A", report_id="r1", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 8)
+        ]
+        rows_partial = [
+            _row(run_id="run_A", report_id="r2", horizon_step=s,
+                 forecast_date=f"2024-02-{s:02d}")
+            for s in range(1, 4)
+        ]
+        df = _df(*(rows_full + rows_partial))
+        out = realized_performance_by_report_run(df)
+        assert out[out["report_id"] == "r1"]["run_status"].iloc[0] == "complete"
+        assert out[out["report_id"] == "r2"]["run_status"].iloc[0] == "partial"
+
+    def test_model_lineage_carried_per_report_run(self):
+        """selected_model_family and selected_m must be carried into the output."""
+        rows = [
+            _row(run_id="run_A", report_id="r1",
+                 selected_model_family="auto_arima", selected_m=7),
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        assert out.iloc[0]["selected_model_family"] == "auto_arima"
+        assert out.iloc[0]["selected_m"] == 7
+
+    def test_reconciliation_with_prediction_level(self):
+        """wape from by_report_run must match wape computed from raw rows for that report-run."""
+        from src.models.metrics import calculate_point_metrics
+        rows = [
+            _row(run_id="run_A", report_id="r1", forecast=110 + i, actual=100,
+                 horizon_step=i + 1, forecast_date=f"2024-02-{i+1:02d}")
+            for i in range(7)
+        ]
+        df = _df(*rows)
+        out = realized_performance_by_report_run(df)
+        import numpy as np
+        actuals   = np.array([100.0] * 7)
+        forecasts = np.array([110.0 + i for i in range(7)])
+        expected_wape = calculate_point_metrics(actuals, forecasts)["wape"]
+        assert out.iloc[0]["wape"] == pytest.approx(expected_wape, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------

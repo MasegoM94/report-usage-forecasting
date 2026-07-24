@@ -1,27 +1,34 @@
-"""Cross-run forecast performance deterioration monitoring.
+"""Per-report cross-run forecast performance deterioration monitoring.
 
-Compares the two most recent *sufficiently realized* pipeline runs per report
-and flags when any tracked metric has deteriorated beyond configured thresholds.
+Compares the two most recent *sufficiently realized* pipeline runs **for each
+report individually** and flags when any tracked metric has deteriorated beyond
+configured thresholds.
 
 Key design decisions
 --------------------
-* Only runs whose ``realization_rate`` meets ``min_realization_rate`` are
-  eligible for comparison.  A 5-day partial forecast is never compared against
-  a complete 28-day run as though they were equivalent.
+* The input table is ``realized_performance_by_report_run`` — one row per
+  (report_id, run_id).  Eligible runs are selected **per report**, so a report
+  that was only partially realized in the most recent portfolio run still
+  participates if it was fully realized in that specific run.
+* This replaces the previous portfolio-level approach where every report
+  received the same recent/previous metrics from the portfolio-level run table.
 * Thresholds are held in ``DeteriorationConfig`` so callers can supply
   tighter or looser bounds without editing source code.
 * ``accuracy_deterioration_flag`` is set to ``True`` only when:
-    1. At least ``min_observations`` realized predictions exist in each run.
+    1. At least ``min_observations_per_run`` realized predictions exist for
+       this report in each compared run.
     2. The metric change exceeds its configured practical threshold.
 * ``deterioration_reasons`` is a list of human-readable strings, empty when
   performance is stable or improving.  Each reason quotes the actual metric
   values so a reader can act without looking at a separate table.
-* When fewer than two comparable runs exist the output row contains
+* Model or selected_m changes between runs are recorded as context only —
+  the function does NOT attribute deterioration to a model change.
+* When fewer than two comparable report-runs exist the output row contains
   ``evidence_status = "insufficient_evidence"`` and all change fields are NaN.
 
 Output schema
 -------------
-One row per ``report_id`` in ``_DETERIORATION_COLS`` order.
+One row per ``report_id`` in ``DETERIORATION_COLS`` order.
 
     report_id
     recent_completed_run_id
@@ -44,7 +51,7 @@ One row per ``report_id`` in ``_DETERIORATION_COLS`` order.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -67,14 +74,14 @@ class DeteriorationConfig:
     ----------
     min_realization_rate:
         Minimum fraction of expected prediction rows that must be realized
-        before a run is considered complete enough for comparison.
+        before a report-run is considered comparable.
         Default 0.9 (90 %) allows for a few late-arriving actuals while
         still excluding clearly partial runs.
 
     min_observations_per_run:
-        Minimum number of realized prediction rows in each compared run.
-        Guards against flagging deterioration from noise when only a handful
-        of actuals have arrived.
+        Minimum number of realized prediction rows for this report in each
+        compared run.  Guards against flagging deterioration from noise when
+        only a handful of actuals have arrived.
 
     wape_change_threshold:
         Absolute WAPE increase (e.g. 0.05 = 5 percentage points) that must be
@@ -130,9 +137,9 @@ DETERIORATION_COLS: list[str] = [
 ]
 
 # evidence_status values
-_STATUS_OK                   = "ok"
-_STATUS_INSUFFICIENT         = "insufficient_evidence"
-_STATUS_NO_ACTUALS           = "no_actuals"
+_STATUS_OK           = "ok"
+_STATUS_INSUFFICIENT = "insufficient_evidence"
+_STATUS_NO_ACTUALS   = "no_actuals"
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +195,11 @@ def _build_reasons(
     p_cov: float,
     cfg: DeteriorationConfig,
 ) -> list[str]:
-    """Build zero or more human-readable deterioration reason strings."""
+    """Build zero or more human-readable deterioration reason strings.
+
+    Reason ordering is deterministic: WAPE first, then bias, then coverage.
+    Model changes are NOT reported as a deterioration cause.
+    """
     reasons: list[str] = []
 
     # WAPE
@@ -230,25 +241,33 @@ def _build_reasons(
 # Main public function
 # ---------------------------------------------------------------------------
 
+_REQUIRED_BY_REPORT_RUN_COLS = {
+    "report_id", "run_id", "realization_rate", "realized_prediction_count",
+    "wape", "bias", "interval_coverage",
+}
+
+
 def compute_deterioration_report(
-    by_run: pd.DataFrame,
-    by_report: pd.DataFrame,
+    by_report_run: pd.DataFrame,
     *,
     config: Optional[DeteriorationConfig] = None,
 ) -> pd.DataFrame:
-    """Compare the two most recent sufficiently realized runs per report.
+    """Compare the two most recent comparable runs **per report**.
+
+    Unlike the previous portfolio-level approach, this function selects
+    eligible runs separately for each report.  Two reports in the same
+    pipeline run can therefore have different recent/previous metrics and
+    different deterioration flags.
 
     Parameters
     ----------
-    by_run:
-        Output of ``realized_performance_by_run`` from
+    by_report_run:
+        Output of ``realized_performance_by_report_run`` from
         ``src.monitoring.production_performance``.  Must contain at least:
-        ``run_id``, ``realization_rate``, ``realized_prediction_count``,
-        ``wape``, ``bias``, ``interval_coverage``.
-    by_report:
-        Output of ``realized_performance_by_report``.  Used only to derive
-        the set of report_ids — per-report metric values are taken from
-        ``by_run`` to keep the comparison at run grain.
+        ``report_id``, ``run_id``, ``realization_rate``,
+        ``realized_prediction_count``, ``wape``, ``bias``,
+        ``interval_coverage``.
+        One row per (report_id, run_id).
     config:
         Threshold configuration.  Uses ``DEFAULT_CONFIG`` when not supplied.
 
@@ -257,73 +276,73 @@ def compute_deterioration_report(
     DataFrame with one row per report_id in ``DETERIORATION_COLS`` column
     order, sorted by ``report_id``.
 
-    Run-level metrics (wape, bias, interval_coverage) are read directly from
-    ``by_run`` so comparisons are always at the same grain (run × portfolio).
-    Per-report run-level breakdowns are not available in ``by_run``; when
-    report-level breakdowns are needed a future extension can accept the full
-    realized history DataFrame instead.
+    Eligible-run selection
+    ----------------------
+    For each report, a run is eligible when BOTH:
+    * ``realization_rate >= config.min_realization_rate``
+    * ``realized_prediction_count >= config.min_observations_per_run``
+
+    The two most recent eligible runs (by ``run_id`` lexicographic descending,
+    which equals chronological descending for timestamp-prefixed IDs) are
+    compared.  Runs that do not meet both criteria are excluded for that
+    report regardless of whether they qualify for other reports.
 
     Evidence status values
     ----------------------
-    ``ok``                   — comparison performed; flag and reasons populated.
-    ``insufficient_evidence`` — fewer than 2 sufficiently realized runs exist
-                               for this report.
-    ``no_actuals``           — WAPE is undefined (all actuals are zero) in at
-                               least one of the compared runs.
+    ``ok``                    — comparison performed; flag and reasons populated.
+    ``insufficient_evidence`` — fewer than 2 comparable runs exist for this
+                                report.
+    ``no_actuals``            — WAPE is undefined (all actuals are zero) in
+                                at least one of the compared runs.
     """
     if config is None:
         config = DEFAULT_CONFIG
 
-    _validate_by_run_input(by_run)
+    _validate_by_report_run_input(by_report_run)
 
-    if by_run.empty or by_report.empty:
+    if by_report_run.empty:
         return pd.DataFrame(columns=DETERIORATION_COLS)
 
-    # Derive the full list of report_ids from by_report
-    all_report_ids = sorted(by_report["report_id"].unique())
-
-    # Identify sufficiently realized runs: realization_rate >= threshold
-    # AND at least min_observations_per_run realized predictions.
-    eligible = by_run[
-        (pd.to_numeric(by_run["realization_rate"], errors="coerce")
-         >= config.min_realization_rate)
-        &
-        (pd.to_numeric(by_run["realized_prediction_count"], errors="coerce")
-         >= config.min_observations_per_run)
-    ].copy()
-
-    # Sort by run_id descending so most recent is first (run_ids are
-    # timestamp-prefixed so lexicographic order equals chronological order).
-    eligible = eligible.sort_values("run_id", ascending=False)
+    all_report_ids = sorted(by_report_run["report_id"].unique())
 
     rows: list[dict] = []
 
     for report_id in all_report_ids:
-        # Find runs that contain rows for this report.
-        # by_run is portfolio-level (one row per run_id), not per-report.
-        # We use it as-is: if the run is eligible it covers all reports
-        # in that run.  A report that only appears in ineligible runs gets
-        # "insufficient_evidence".
-        eligible_runs = eligible  # same eligible set for every report
+        # --- select eligible runs for THIS report only ---
+        report_rows = by_report_run[by_report_run["report_id"] == report_id]
 
-        if len(eligible_runs) < 2:
+        rate_ok = (
+            pd.to_numeric(report_rows["realization_rate"], errors="coerce")
+            >= config.min_realization_rate
+        )
+        count_ok = (
+            pd.to_numeric(report_rows["realized_prediction_count"], errors="coerce")
+            >= config.min_observations_per_run
+        )
+        eligible = report_rows[rate_ok & count_ok].copy()
+
+        # Sort descending by run_id: lexicographic order == chronological order
+        # for timestamp-prefixed run IDs.
+        eligible = eligible.sort_values("run_id", ascending=False)
+
+        if len(eligible) < 2:
             rows.append(_nan_row(report_id, _STATUS_INSUFFICIENT))
             continue
 
-        recent_run   = eligible_runs.iloc[0]
-        previous_run = eligible_runs.iloc[1]
+        recent_row   = eligible.iloc[0]
+        previous_row = eligible.iloc[1]
 
-        r_run_id = str(recent_run["run_id"])
-        p_run_id = str(previous_run["run_id"])
+        r_run_id = str(recent_row["run_id"])
+        p_run_id = str(previous_row["run_id"])
 
-        r_wape = _safe_float(recent_run["wape"])
-        p_wape = _safe_float(previous_run["wape"])
-        r_bias = _safe_float(recent_run["bias"])
-        p_bias = _safe_float(previous_run["bias"])
-        r_cov  = _safe_float(recent_run["interval_coverage"])
-        p_cov  = _safe_float(previous_run["interval_coverage"])
+        r_wape = _safe_float(recent_row["wape"])
+        p_wape = _safe_float(previous_row["wape"])
+        r_bias = _safe_float(recent_row["bias"])
+        p_bias = _safe_float(previous_row["bias"])
+        r_cov  = _safe_float(recent_row["interval_coverage"])
+        p_cov  = _safe_float(previous_row["interval_coverage"])
 
-        # WAPE-undefined case
+        # WAPE-undefined case (zero actual volume in both compared runs)
         if math.isnan(r_wape) and math.isnan(p_wape):
             rows.append({
                 **_nan_row(report_id, _STATUS_NO_ACTUALS),
@@ -338,7 +357,6 @@ def compute_deterioration_report(
         bias_change     = _delta(r_bias, p_bias)
         cov_change      = _delta(r_cov,  p_cov)
 
-        # Build reasons
         reasons = _build_reasons(
             report_id=report_id,
             recent_run_id=r_run_id,
@@ -381,17 +399,11 @@ def compute_deterioration_report(
 # Validation
 # ---------------------------------------------------------------------------
 
-_REQUIRED_BY_RUN_COLS = {
-    "run_id", "realization_rate", "realized_prediction_count",
-    "wape", "bias", "interval_coverage",
-}
-
-
-def _validate_by_run_input(by_run: pd.DataFrame) -> None:
-    missing = _REQUIRED_BY_RUN_COLS - set(by_run.columns)
+def _validate_by_report_run_input(by_report_run: pd.DataFrame) -> None:
+    missing = _REQUIRED_BY_REPORT_RUN_COLS - set(by_report_run.columns)
     if missing:
         raise ValueError(
-            f"by_run is missing required column(s): {sorted(missing)}."
+            f"by_report_run is missing required column(s): {sorted(missing)}."
         )
 
 

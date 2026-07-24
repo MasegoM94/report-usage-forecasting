@@ -132,6 +132,38 @@ _MODEL_COLS = [
     "mean_interval_width",
 ]
 
+_REPORT_RUN_COLS = [
+    "report_id",
+    "report_name",
+    "run_id",
+    "selection_run_id",
+    "generated_at",
+    "training_cutoff",
+    "selected_model_family",
+    "selected_model_name",
+    "selected_m",
+    "expected_prediction_count",
+    "realized_prediction_count",
+    "realization_rate",
+    "fully_realized",
+    "comparable_run",
+    "mae",
+    "rmse",
+    "wape",
+    "bias",
+    "absolute_bias",
+    "interval_observation_count",
+    "interval_coverage",
+    "mean_interval_width",
+    "lineage_complete",
+    "run_status",
+]
+
+# Defaults that mirror DeteriorationConfig — kept here to avoid a circular import.
+# If you change DeteriorationConfig defaults, update these too.
+_DEFAULT_MIN_REALIZATION_RATE: float = 0.90
+_DEFAULT_MIN_OBSERVATIONS_PER_RUN: int = 10
+
 # Canonical bucket order for deterministic sorting
 _BUCKET_ORDER = [b[0] for b in HORIZON_BUCKETS]
 
@@ -229,7 +261,7 @@ def _explode_horizon_buckets(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Per-run: expected prediction count
+# Per-run: expected prediction count (shared helper)
 # ---------------------------------------------------------------------------
 
 def _expected_count_per_run(df: pd.DataFrame) -> pd.Series:
@@ -245,6 +277,137 @@ def _expected_count_per_run(df: pd.DataFrame) -> pd.Series:
         _max_step=("horizon_step", "max"),
     )
     return (run_stats["_n_reports"] * run_stats["_max_step"]).rename("expected")
+
+
+# ---------------------------------------------------------------------------
+# Table 0: realized_performance_by_report_run
+# ---------------------------------------------------------------------------
+
+def realized_performance_by_report_run(
+    df: pd.DataFrame,
+    *,
+    min_realization_rate: float = _DEFAULT_MIN_REALIZATION_RATE,
+    min_observations_per_run: int = _DEFAULT_MIN_OBSERVATIONS_PER_RUN,
+) -> pd.DataFrame:
+    """Aggregate realized forecast performance at the (report_id, run_id) grain.
+
+    This is the foundational table for per-report deterioration monitoring.
+    Each row captures one report's realized performance in one pipeline run,
+    including whether the run was sufficiently realized to be used in a
+    head-to-head comparison (``comparable_run``).
+
+    Parameters
+    ----------
+    df:
+        Normalized realized forecast history.  Must contain the columns in
+        ``_REQUIRED_INPUT_COLS``.
+    min_realization_rate:
+        Fraction of expected prediction rows that must be realized before a
+        report-run is flagged ``comparable_run=True``.  Defaults to the same
+        value as ``DeteriorationConfig.min_realization_rate``.
+    min_observations_per_run:
+        Minimum number of realized rows for a report-run to be comparable.
+        Defaults to the same value as
+        ``DeteriorationConfig.min_observations_per_run``.
+
+    Returns
+    -------
+    DataFrame with columns ``_REPORT_RUN_COLS``, sorted by
+    (report_id, run_id).  One row per (report_id, run_id) pair.
+
+    Key columns
+    -----------
+    expected_prediction_count
+        Max ``horizon_step`` seen across *all* reports in this run.  A partial
+        run will therefore show a low ``realization_rate`` for every report.
+    fully_realized
+        ``True`` when ``realized_prediction_count == expected_prediction_count``.
+    comparable_run
+        ``True`` when the run meets both the realization-rate and minimum-
+        observation thresholds.  Used by ``compute_deterioration_report`` to
+        select eligible runs for per-report comparison.
+    interval_observation_count
+        Number of rows with non-NaN ``lower_bound`` and ``upper_bound``.
+    run_status
+        ``"complete"`` when ``fully_realized`` else ``"partial"``.
+    lineage_complete
+        Passed through from the realized forecast history column of the same
+        name (null when the source file lacks this column).
+    """
+    validate_realized_history_input(df)
+    if df.empty:
+        return pd.DataFrame(columns=_REPORT_RUN_COLS)
+
+    df = df.copy()
+    df["horizon_step"] = pd.to_numeric(df["horizon_step"], errors="coerce")
+    df["actual"]   = pd.to_numeric(df["actual"],   errors="coerce")
+    df["forecast"] = pd.to_numeric(df["forecast"], errors="coerce")
+
+    # Max horizon_step per run — used as the expected count for every report in
+    # that run.  A report with fewer realized steps than the run maximum is partial.
+    run_max_step: dict = (
+        df.groupby("run_id")["horizon_step"].max().to_dict()
+    )
+
+    def _first(series: pd.Series):
+        s = series.dropna()
+        return s.iloc[0] if not s.empty else None
+
+    rows = []
+    for (report_id, run_id), grp in df.groupby(
+        ["report_id", "run_id"], sort=True
+    ):
+        metrics = _agg_metrics(grp)
+
+        realized_count = len(grp)
+        max_step = run_max_step.get(run_id, realized_count)
+        expected_count = int(max_step) if max_step > 0 else realized_count
+        realization_rate = (
+            realized_count / expected_count if expected_count > 0 else np.nan
+        )
+        fully_realized = realized_count == expected_count
+
+        comparable_run = bool(
+            (not np.isnan(realization_rate))
+            and realization_rate >= min_realization_rate
+            and realized_count >= min_observations_per_run
+        )
+
+        # Interval observation count: rows where both bounds are present
+        lo = pd.to_numeric(grp["lower_bound"], errors="coerce")
+        hi = pd.to_numeric(grp["upper_bound"], errors="coerce")
+        interval_obs_count = int((lo.notna() & hi.notna()).sum())
+
+        rows.append({
+            "report_id":                report_id,
+            "report_name":              _first(grp["report_name"]) if "report_name" in grp.columns else None,
+            "run_id":                   run_id,
+            "selection_run_id":         _first(grp["selection_run_id"]) if "selection_run_id" in grp.columns else None,
+            "generated_at":             _first(grp["generated_at"]),
+            "training_cutoff":          _first(grp["training_cutoff"]),
+            "selected_model_family":    _first(grp["selected_model_family"]),
+            "selected_model_name":      _first(grp["selected_model_name"]),
+            "selected_m":               _first(grp["selected_m"]),
+            "expected_prediction_count":  expected_count,
+            "realized_prediction_count":  realized_count,
+            "realization_rate":           realization_rate,
+            "fully_realized":             fully_realized,
+            "comparable_run":             comparable_run,
+            "mae":                      metrics["mae"],
+            "rmse":                     metrics["rmse"],
+            "wape":                     metrics["wape"],
+            "bias":                     metrics["bias"],
+            "absolute_bias":            metrics["absolute_bias"],
+            "interval_observation_count": interval_obs_count,
+            "interval_coverage":        metrics["interval_coverage"],
+            "mean_interval_width":      metrics["mean_interval_width"],
+            "lineage_complete":         _first(grp["lineage_complete"]) if "lineage_complete" in grp.columns else None,
+            "run_status":               "complete" if fully_realized else "partial",
+        })
+
+    out = pd.DataFrame(rows)
+    out = out.sort_values(["report_id", "run_id"], ignore_index=True)
+    return out[_REPORT_RUN_COLS]
 
 
 # ---------------------------------------------------------------------------
@@ -552,22 +715,25 @@ def build_production_performance_tables(df: pd.DataFrame) -> dict[str, pd.DataFr
     Returns
     -------
     dict with keys:
-        ``by_run``        → realized_performance_by_run DataFrame
+        ``by_report_run`` → realized_performance_by_report_run DataFrame
+        ``by_run``        → realized_performance_by_run DataFrame (portfolio-level)
         ``by_report``     → realized_performance_by_report DataFrame
         ``by_horizon``    → realized_performance_by_horizon DataFrame
         ``by_model``      → realized_performance_by_model DataFrame
-        ``deterioration`` → cross-run deterioration report DataFrame
+        ``deterioration`` → per-report deterioration DataFrame
     """
     from src.monitoring.deterioration import compute_deterioration_report
 
-    by_run    = realized_performance_by_run(df)
-    by_report = realized_performance_by_report(df)
+    by_report_run = realized_performance_by_report_run(df)
+    by_run        = realized_performance_by_run(df)
+    by_report     = realized_performance_by_report(df)
     return {
+        "by_report_run": by_report_run,
         "by_run":        by_run,
         "by_report":     by_report,
         "by_horizon":    realized_performance_by_horizon(df),
         "by_model":      realized_performance_by_model(df),
-        "deterioration": compute_deterioration_report(by_run, by_report),
+        "deterioration": compute_deterioration_report(by_report_run),
     }
 
 
@@ -609,16 +775,22 @@ def save_production_performance(
     metrics_dir = project_root / "outputs" / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    name_map = {
+    # Tables written to outputs/monitoring/
+    monitoring_name_map = {
         "by_run":        "realized_performance_by_run.csv",
         "by_report":     "realized_performance_by_report.csv",
         "by_horizon":    "realized_performance_by_horizon.csv",
         "by_model":      "realized_performance_by_model.csv",
         "deterioration": "deterioration_report.csv",
     }
+    # Tables written to outputs/metrics/
+    metrics_name_map = {
+        "by_report_run": "realized_performance_by_report_run.csv",
+        "deterioration": "report_performance_deterioration.csv",
+    }
 
     paths: dict[str, Optional[Path]] = {}
-    for key, filename in name_map.items():
+    for key, filename in monitoring_name_map.items():
         tbl = tables.get(key, pd.DataFrame())
         if tbl is not None and not tbl.empty:
             path = out_dir / filename
@@ -626,6 +798,15 @@ def save_production_performance(
             paths[key] = path
         else:
             paths[key] = None
+
+    for key, filename in metrics_name_map.items():
+        tbl = tables.get(key, pd.DataFrame())
+        if tbl is not None and not tbl.empty:
+            path = metrics_dir / filename
+            tbl.to_csv(path, index=False)
+            paths.setdefault(f"metrics_{key}", path)
+        else:
+            paths.setdefault(f"metrics_{key}", None)
 
     # Mirror the realized horizon table to outputs/metrics/ so production and
     # backtest horizon outputs share one directory for easy comparison.
