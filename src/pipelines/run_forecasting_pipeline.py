@@ -1840,6 +1840,17 @@ def run_production_pipeline(
         f"(of {len(realized_rows) + n_skipped} candidates)"
     )
 
+    # Step 8: Aggregate production performance monitoring tables.
+    # Runs after realized history is updated so the tables always reflect the
+    # latest realized rows.  Written to outputs/monitoring/ as CSV overwrites
+    # (derived views, not append-only history).
+    from src.monitoring.production_performance import update_production_performance
+    perf_result = update_production_performance(project_root)
+    monitoring_paths = perf_result["paths"]
+    for name, path in monitoring_paths.items():
+        if path:
+            print(f"Saved [monitoring_{name}]: {path.relative_to(project_root)}")
+
     return {
         "run_id": run_id,
         "input_path": input_path,
@@ -1853,6 +1864,8 @@ def run_production_pipeline(
         "output_paths": output_paths,
         "realized_rows": realized_rows,
         "n_realized_skipped": n_skipped,
+        "monitoring_tables": perf_result["tables"],
+        "monitoring_paths": monitoring_paths,
     }
 
 
