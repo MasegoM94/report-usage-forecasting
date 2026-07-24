@@ -579,11 +579,16 @@ def save_production_performance(
     tables: dict[str, pd.DataFrame],
     project_root: Path,
 ) -> dict[str, Optional[Path]]:
-    """Write monitoring tables to ``outputs/monitoring/``.
+    """Write monitoring tables to ``outputs/monitoring/`` and metrics copies.
 
     Called by the pipeline after realized history has been updated.
     Each table is written as a CSV overwrite (these are derived views, not
     append-only history; they are always recomputed from the full history).
+
+    The ``by_horizon`` table is additionally written to
+    ``outputs/metrics/realized_performance_by_horizon.csv`` so that backtest
+    and production horizon results live in the same directory and can be
+    compared without navigating between ``monitoring/`` and ``metrics/``.
 
     Parameters
     ----------
@@ -595,9 +600,14 @@ def save_production_performance(
     Returns
     -------
     dict mapping table name → output Path (or None if table is empty).
+    Includes an extra ``"realized_horizon_metrics"`` key for the metrics-dir copy.
     """
+    from src.models.horizon_output_validation import validate_realized_horizon_output
+
     out_dir = project_root / "outputs" / "monitoring"
     out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir = project_root / "outputs" / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
 
     name_map = {
         "by_run":        "realized_performance_by_run.csv",
@@ -616,6 +626,20 @@ def save_production_performance(
             paths[key] = path
         else:
             paths[key] = None
+
+    # Mirror the realized horizon table to outputs/metrics/ so production and
+    # backtest horizon outputs share one directory for easy comparison.
+    horizon_tbl = tables.get("by_horizon", pd.DataFrame())
+    if horizon_tbl is not None and not horizon_tbl.empty:
+        try:
+            validate_realized_horizon_output(horizon_tbl)
+        except ValueError:
+            pass  # validation errors are non-fatal for the write
+        metrics_path = metrics_dir / "realized_performance_by_horizon.csv"
+        horizon_tbl.to_csv(metrics_path, index=False)
+        paths["realized_horizon_metrics"] = metrics_path
+    else:
+        paths["realized_horizon_metrics"] = None
 
     return paths
 

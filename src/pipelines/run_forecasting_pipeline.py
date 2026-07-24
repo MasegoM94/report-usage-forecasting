@@ -1604,6 +1604,7 @@ def save_production_outputs(
     series_dict: Optional[dict] = None,
     fold_metrics: Optional[pd.DataFrame] = None,
     candidate_summary: Optional[pd.DataFrame] = None,
+    predictions: Optional[pd.DataFrame] = None,
 ) -> dict[str, Optional[Path]]:
     """Save production forecast, model summary, and selection files.
 
@@ -1635,6 +1636,13 @@ def save_production_outputs(
     candidate_summary:
         Optional candidate summary (output of ``summarise_candidate_performance``);
         used for baseline improvement computations in diagnostics.
+    predictions:
+        Optional row-per-(report, fold, model, forecast_date) backtest predictions
+        (output of ``run_candidate_backtest_stage``).  When supplied together with
+        ``series_dict``, horizon-bucket metrics are computed and saved to
+        ``outputs/metrics/backtest_horizon_performance_latest.csv``.  Selection
+        lineage (``selected_model_name``, ``selected_m``) is joined from
+        ``selection`` so each row can be linked to the winning candidate.
 
     Returns
     -------
@@ -1676,6 +1684,36 @@ def save_production_outputs(
         paths["model_selection"] = sel_path
     else:
         paths["model_selection"] = None
+
+    # Backtest horizon-bucket performance output
+    if predictions is not None and series_dict and not predictions.empty:
+        try:
+            from src.models.horizon_evaluation import calculate_horizon_bucket_metrics
+            from src.models.horizon_output_validation import (
+                validate_backtest_horizon_output,
+            )
+
+            horizon_df = calculate_horizon_bucket_metrics(predictions, series_dict)
+
+            # Join selection lineage so each row is traceable to the winning candidate
+            if not selection.empty and "report_id" in selection.columns:
+                lineage = selection[
+                    ["report_id", "selected_model_name", "selected_m"]
+                ].drop_duplicates("report_id")
+                horizon_df = horizon_df.merge(lineage, on="report_id", how="left")
+            else:
+                horizon_df["selected_model_name"] = None
+                horizon_df["selected_m"] = None
+
+            validate_backtest_horizon_output(horizon_df)
+
+            bh_path = metrics_dir / "backtest_horizon_performance_latest.csv"
+            horizon_df.to_csv(bh_path, index=False)
+            paths["backtest_horizon"] = bh_path
+        except Exception:
+            paths["backtest_horizon"] = None
+    else:
+        paths["backtest_horizon"] = None
 
     # Seasonality diagnostic outputs
     if series_dict and fold_metrics is not None and not fold_metrics.empty:
@@ -1793,7 +1831,7 @@ def run_production_pipeline(
         candidate_summary=model_summary,
     )
 
-    # Step 6: Save with lineage + seasonality diagnostics
+    # Step 6: Save with lineage + seasonality diagnostics + backtest horizon
     output_paths = save_production_outputs(
         production_df=production_df,
         model_summary=model_summary,
@@ -1804,6 +1842,7 @@ def run_production_pipeline(
         series_dict=eligible_series,
         fold_metrics=fold_metrics,
         candidate_summary=model_summary,
+        predictions=predictions,
     )
 
     # Step 7: Update normalized realized forecast history.
