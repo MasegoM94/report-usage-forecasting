@@ -2,19 +2,51 @@
 
 The app is intentionally read-only and tolerant of missing artifacts so that it
 can be opened before every pipeline output has been generated.
+
+Forecast file preference
+------------------------
+When ``outputs/forecasts/production_forecasts_latest.csv`` is present,
+``load_app_data`` sets ``data["forecasts"]`` from that file and ignores the
+legacy ``report_view_forecasts_latest.csv``.  If the production file is present
+but fails schema validation a ``ValueError`` is raised immediately — there is no
+silent fallback, because silently mixing production and legacy data would corrupt
+downstream displays.  When the production file is absent the legacy file is used
+without complaint (monitoring has simply not yet run).
+
+Monitoring output files
+-----------------------
+Seven production-pipeline monitoring files are loaded alongside the standard app
+inputs.  Each file is accessed under a stable key in ``data`` and in the
+structured dict returned by ``load_monitoring_data``.  Each monitoring entry
+carries a ``status`` field:
+
+    "absent"         — file does not exist (monitoring has not yet run)
+    "empty"          — file exists but contains no data rows
+    "invalid_schema" — file exists and has rows, but required columns are missing
+    "ok"             — file exists, has rows, and passes schema validation
+
+Keys added to ``data`` by monitoring:
+    production_forecasts_latest    outputs/forecasts/production_forecasts_latest.csv
+    production_forecasts_history   outputs/forecasts/production_forecasts_history.csv
+    realized_errors_history        outputs/metrics/realized_errors_history.csv
+    perf_by_run                    outputs/monitoring/realized_performance_by_run.csv
+    perf_by_report                 outputs/monitoring/realized_performance_by_report.csv
+    perf_by_horizon                outputs/monitoring/realized_performance_by_horizon.csv
+    perf_by_model                  outputs/monitoring/realized_performance_by_model.csv
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 
 
 OUTPUT_PATHS = {
     "forecast_features": Path("data/processed/mart_report_daily_context.csv"),
+    # Legacy forecast file — used only when production_forecasts_latest is absent
     "forecasts": Path("outputs/forecasts/report_view_forecasts_latest.csv"),
     "metrics": Path("outputs/metrics/report_view_metrics_latest.csv"),
     "report_features": Path("outputs/metrics/report_features.csv"),
@@ -26,6 +58,85 @@ OUTPUT_PATHS = {
     "dim_user": Path("data/processed/dim_user.csv"),
     "dim_report": Path("data/processed/dim_report.csv"),
     "fact_report_views": Path("data/processed/fact_report_views.csv"),
+}
+
+# Monitoring files written by the production pipeline.  Keyed by the logical
+# name used in data["..."] and the structured monitoring dict.
+MONITORING_PATHS: dict[str, Path] = {
+    "production_forecasts_latest":  Path("outputs/forecasts/production_forecasts_latest.csv"),
+    "production_forecasts_history": Path("outputs/forecasts/production_forecasts_history.csv"),
+    "realized_errors_history":      Path("outputs/metrics/realized_errors_history.csv"),
+    "perf_by_run":                  Path("outputs/monitoring/realized_performance_by_run.csv"),
+    "perf_by_report":               Path("outputs/monitoring/realized_performance_by_report.csv"),
+    "perf_by_horizon":              Path("outputs/monitoring/realized_performance_by_horizon.csv"),
+    "perf_by_model":                Path("outputs/monitoring/realized_performance_by_model.csv"),
+}
+
+# Status literals returned in the structured monitoring dict
+MonitoringStatus = Literal["absent", "empty", "invalid_schema", "ok"]
+
+# ---------------------------------------------------------------------------
+# Required column sets — one per monitoring file type
+# ---------------------------------------------------------------------------
+
+# Minimum columns required to consider each monitoring file structurally valid.
+# These cover identity and the most commonly displayed fields; additional columns
+# may exist without error.
+
+REQUIRED_COLS_PRODUCTION_FORECAST: set[str] = {
+    "run_id",
+    "report_id",
+    "forecast_date",
+    "horizon_step",
+    "selected_model_family",
+    "selected_model_name",
+    "selected_m",
+    "forecast",
+}
+
+REQUIRED_COLS_REALIZED_ERRORS: set[str] = {
+    "report_id",
+    "forecast_date",
+    "actual",
+    "forecast",
+}
+
+REQUIRED_COLS_PERF_BY_RUN: set[str] = {
+    "run_id",
+    "realized_prediction_count",
+    "realization_rate",
+    "wape",
+    "bias",
+}
+
+REQUIRED_COLS_PERF_BY_REPORT: set[str] = {
+    "report_id",
+    "wape",
+    "monitoring_status",
+}
+
+REQUIRED_COLS_PERF_BY_HORIZON: set[str] = {
+    "report_id",
+    "horizon_bucket",
+    "wape",
+    "observation_count",
+}
+
+REQUIRED_COLS_PERF_BY_MODEL: set[str] = {
+    "selected_model_family",
+    "selected_m",
+    "wape",
+}
+
+# Map each monitoring key to its required column set
+_MONITORING_REQUIRED_COLS: dict[str, set[str]] = {
+    "production_forecasts_latest":  REQUIRED_COLS_PRODUCTION_FORECAST,
+    "production_forecasts_history": REQUIRED_COLS_PRODUCTION_FORECAST,
+    "realized_errors_history":      REQUIRED_COLS_REALIZED_ERRORS,
+    "perf_by_run":                  REQUIRED_COLS_PERF_BY_RUN,
+    "perf_by_report":               REQUIRED_COLS_PERF_BY_REPORT,
+    "perf_by_horizon":              REQUIRED_COLS_PERF_BY_HORIZON,
+    "perf_by_model":                REQUIRED_COLS_PERF_BY_MODEL,
 }
 
 REPORT_ID_COLUMNS = ["report_id", "ReportId", "report_key", "ReportKey"]
@@ -146,6 +257,91 @@ def normalize_report_columns(df: pd.DataFrame) -> pd.DataFrame:
     return renamed
 
 
+# ---------------------------------------------------------------------------
+# Monitoring file loading helpers
+# ---------------------------------------------------------------------------
+
+def check_monitoring_file(
+    path: Path,
+    required_cols: set[str],
+) -> tuple[pd.DataFrame, "MonitoringStatus"]:
+    """Read one monitoring CSV and return (DataFrame, status).
+
+    The four possible statuses reflect distinct operational states:
+
+    ``"absent"``         — the file does not exist; monitoring has not run.
+    ``"empty"``          — the file exists but has no data rows (pipeline ran
+                           but produced nothing to write, e.g. no realized data).
+    ``"invalid_schema"`` — the file has rows but is missing required columns;
+                           likely a schema drift or partial write.
+    ``"ok"``             — file has rows and passes column validation.
+
+    The returned DataFrame is always safe to pass to pandas operations:
+    - For "absent" and "empty" it is an empty DataFrame.
+    - For "invalid_schema" the raw DataFrame is returned so callers can inspect
+      which columns are present, but status signals that required columns are absent.
+    - For "ok" the DataFrame has at minimum the required columns.
+
+    Zero-actual rows are never dropped — callers receive all rows from the file.
+    """
+    if not path.exists():
+        return pd.DataFrame(), "absent"
+
+    df = read_csv(path)
+
+    if df.empty:
+        return df, "empty"
+
+    missing = required_cols - set(df.columns)
+    if missing:
+        return df, "invalid_schema"
+
+    return df, "ok"
+
+
+def load_monitoring_data(
+    root: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Load all production-pipeline monitoring outputs.
+
+    Returns a dict keyed by logical monitoring name.  Each value is a dict:
+
+        {
+            "data":    pd.DataFrame,       # empty when absent/empty/invalid
+            "status":  MonitoringStatus,   # "absent" | "empty" | "invalid_schema" | "ok"
+            "missing_cols": list[str],     # non-empty only when status == "invalid_schema"
+            "path":    Path,               # absolute path that was attempted
+        }
+
+    The ``data`` value for ``"invalid_schema"`` files contains the raw (but
+    column-incomplete) DataFrame so callers can display a diagnostic message.
+    """
+    base = root or project_root()
+    result: dict[str, dict[str, Any]] = {}
+
+    for key, rel_path in MONITORING_PATHS.items():
+        abs_path = base / rel_path
+        required = _MONITORING_REQUIRED_COLS.get(key, set())
+        df, status = check_monitoring_file(abs_path, required)
+
+        missing_cols: list[str] = []
+        if status == "invalid_schema":
+            missing_cols = sorted(required - set(df.columns))
+
+        result[key] = {
+            "data":         df if status == "ok" else (df if status == "invalid_schema" else pd.DataFrame()),
+            "status":       status,
+            "missing_cols": missing_cols,
+            "path":         abs_path,
+        }
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# report_features schema guard
+# ---------------------------------------------------------------------------
+
 # Columns that must be present in report_features when the file is non-empty.
 # Raising here instead of displaying NaN surfaces a rename early and clearly.
 _REPORT_FEATURES_REQUIRED_COLS: set[str] = {
@@ -176,7 +372,24 @@ def validate_report_features_schema(df: pd.DataFrame) -> None:
 
 
 def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
-    """Load all app inputs from outputs/* into a keyed dictionary."""
+    """Load all app inputs from outputs/* into a keyed dictionary.
+
+    Monitoring data
+    ---------------
+    All seven monitoring files are loaded and available under their logical keys
+    (e.g. ``data["perf_by_run"]``, ``data["perf_by_report"]``).
+
+    The full structured monitoring result (including per-file status) is stored
+    under ``data["_monitoring"]`` for callers that need to distinguish absent
+    from invalid.  The value is a dict produced by ``load_monitoring_data``.
+
+    Forecast file preference
+    ------------------------
+    If ``production_forecasts_latest.csv`` loaded successfully (status "ok"),
+    it replaces the legacy ``data["forecasts"]``.  If the production file is
+    present but has an invalid schema a ``ValueError`` is raised immediately —
+    there is no silent fallback to legacy data.
+    """
     base = root or project_root()
     data: dict[str, pd.DataFrame] = {}
 
@@ -188,6 +401,31 @@ def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
             data[key] = normalize_report_columns(read_csv(path))
 
     validate_report_features_schema(data.get("report_features", pd.DataFrame()))
+
+    # Load monitoring outputs and promote to top-level keys
+    monitoring = load_monitoring_data(base)
+    data["_monitoring"] = monitoring  # type: ignore[assignment]
+
+    for key, entry in monitoring.items():
+        data[key] = normalize_report_columns(entry["data"])
+
+    # Prefer production forecast over legacy.
+    prod_entry = monitoring["production_forecasts_latest"]
+    if prod_entry["status"] == "ok":
+        # Production file is present and valid — use it as the canonical forecast source.
+        data["forecasts"] = normalize_report_columns(prod_entry["data"])
+    elif prod_entry["status"] == "invalid_schema":
+        raise ValueError(
+            "production_forecasts_latest.csv is present but missing required "
+            f"column(s): {prod_entry['missing_cols']}. "
+            "Fix the pipeline output or remove the file before opening the app. "
+            "The app will not silently fall back to legacy forecast data when a "
+            "production file exists with an invalid schema."
+        )
+    # status "absent" → keep data["forecasts"] from legacy path above (no complaint)
+    # status "empty"  → production file exists but has no rows; keep legacy for display
+    #                    but do NOT raise — an empty production file is not invalid
+
     return data
 
 
