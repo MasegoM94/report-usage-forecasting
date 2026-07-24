@@ -103,7 +103,13 @@ report-usage-forecasting/
 ├── outputs/
 │   ├── validation/               # Validation results and reconciliation outputs
 │   ├── forecasts/                # Latest forecasts and forecast history
-│   ├── metrics/                  # Latest metrics, model comparisons, and error history
+│   │   ├── production_forecasts_history.csv   # Canonical production forecast log (append-only)
+│   │   └── forecasts_history.csv              # Legacy forecast log (read by migration only)
+│   ├── metrics/                  # Latest metrics, model comparisons, and realized history
+│   │   └── realized_forecast_history.csv      # CANONICAL realized forecast history (24-column schema)
+│   │                                          # Source of truth for all post-hoc accuracy monitoring.
+│   │                                          # realized_errors_history.csv is LEGACY — do not read it.
+│   ├── archive/                  # Retired files (e.g. migrated realized_errors_history snapshots)
 │   ├── segments/                 # Report and user segmentation outputs
 │   ├── diagnostics/              # Diagnostic rule outputs
 │   ├── insights/                 # Batch-generated GenAI insight outputs
@@ -326,6 +332,34 @@ Planned next:
 - Add optional open-source forecasting model comparison.
 - Add GenAI output evaluation or prompt quality checks.
 
+## Concurrency and Storage Limitations
+
+The history persistence layer (`append_forecasts_history`, `append_metrics_history`,
+`write_realized_forecast_history`, `migrate_legacy_realized_errors`) uses append-only
+CSV files with a read-check-append-write pattern that is **not transactional**.
+
+| Scope | Status |
+|---|---|
+| Two threads in the same Python process | **Guarded** — `threading.Lock` per file path via `src/persistence/_csv_lock.py` |
+| Two separate OS processes | **Not coordinated** — no cross-process locking |
+| CSV writes | **Not transactional** — partial writes or interleaved appends are possible under concurrent processes |
+
+### What this means in practice
+
+- A single scheduled pipeline run is safe.
+- Running two pipeline instances in parallel (e.g., manual trigger while a scheduled job runs) can produce duplicate or lost rows.
+- CI/CD parallel test workers that write to the same output directory will corrupt history files (tests use `tmp_path` to avoid this).
+
+### Production deployment recommendation
+
+For environments where multiple pipeline processes may run concurrently, replace CSV persistence with one of:
+
+- A transactional relational database (PostgreSQL, SQLite with WAL mode)
+- Delta Lake or Apache Iceberg tables (ACID append semantics)
+- Database upserts keyed on the deduplication key
+- Orchestrator-enforced mutual exclusion (Airflow, Prefect, Dagster, etc.)
+- An explicit cross-process file-locking library (`filelock`, `fcntl.flock`)
+
 ## Roadmap
 
 1. Improve forecast evaluation with rolling-origin backtesting.
@@ -333,3 +367,4 @@ Planned next:
 3. Add a stronger model governance table.
 4. Add optional open-source forecasting model comparison.
 5. Add GenAI output evaluation or prompt quality checks.
+

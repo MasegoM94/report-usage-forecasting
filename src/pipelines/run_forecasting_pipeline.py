@@ -1026,7 +1026,32 @@ def append_forecasts_history(
     forecast_table: pd.DataFrame,
     project_root: Path,
 ) -> Optional[Path]:
-    """Append future forecast rows to the long-running forecast history."""
+    """Append future forecast rows to the long-running forecast history.
+
+    Writes to ``outputs/forecasts/forecasts_history.csv``.
+
+    Single-writer assumption
+    ------------------------
+    CSV history persistence assumes a single active pipeline writer.  Concurrent
+    processes may create duplicate or lost updates because the read-check-append-
+    write sequence is not transactional.  An in-process threading lock prevents
+    two threads within the same Python process from writing this file
+    simultaneously, but separate OS processes are NOT coordinated.
+
+    For production deployments with concurrent writers use transactional
+    database storage, Delta or Iceberg tables, database upserts, orchestrator-
+    enforced mutual exclusion, or an explicit cross-process file-locking
+    mechanism.
+
+    Returns
+    -------
+    Path written, or None when there are no forecast rows to append.
+    """
+    import logging
+    from src.persistence._csv_lock import csv_write_lock, log_write_plan
+
+    _log = logging.getLogger(__name__)
+
     if forecast_table is None or forecast_table.empty:
         return None
 
@@ -1068,8 +1093,26 @@ def append_forecasts_history(
     )
 
     history_file = project_root / "outputs" / "forecasts" / "forecasts_history.csv"
-    write_header = not history_file.exists()
-    df_out.to_csv(history_file, mode="a", index=False, header=write_header)
+
+    with csv_write_lock(history_file):
+        existing_rows = 0
+        if history_file.exists():
+            try:
+                existing_rows = sum(1 for _ in open(history_file)) - 1  # subtract header
+                existing_rows = max(existing_rows, 0)
+            except OSError:
+                existing_rows = 0
+
+        log_write_plan(
+            target=history_file,
+            candidate_rows=len(df_out),
+            existing_rows=existing_rows,
+            new_rows=len(df_out),
+            skipped_rows=0,
+        )
+        write_header = not history_file.exists()
+        df_out.to_csv(history_file, mode="a", index=False, header=write_header)
+
     return history_file
 
 
@@ -1081,6 +1124,8 @@ def append_metrics_history(
 ) -> Optional[Path]:
     """Append this run's per-report metrics to the long-running metrics history.
 
+    Writes to ``outputs/metrics/metrics_history.csv``.
+
     Grain
     -----
     One row per ``(run_id, report_id)``.  Each pipeline run produces exactly one
@@ -1089,9 +1134,16 @@ def append_metrics_history(
 
     Single-writer assumption
     ------------------------
-    This function uses an append-mode CSV write with no file locking.  It is
-    safe only when a single process writes at a time.  Concurrent writers will
-    corrupt the file.
+    CSV history persistence assumes a single active pipeline writer.  Concurrent
+    processes may create duplicate or lost updates because the read-check-append-
+    write sequence is not transactional.  An in-process threading lock prevents
+    two threads within the same Python process from writing this file
+    simultaneously, but separate OS processes are NOT coordinated.
+
+    For production deployments with concurrent writers use transactional
+    database storage, Delta or Iceberg tables, database upserts, orchestrator-
+    enforced mutual exclusion, or an explicit cross-process file-locking
+    mechanism.
 
     Raises
     ------
@@ -1100,6 +1152,9 @@ def append_metrics_history(
         column, or if any ``(run_id, report_id)`` key in the incoming batch
         already exists in the history file.
     """
+    import logging
+    from src.persistence._csv_lock import csv_write_lock, log_write_plan
+
     if metrics_table.empty:
         return None
 
@@ -1118,24 +1173,35 @@ def append_metrics_history(
 
     history_file = project_root / "outputs" / "metrics" / "metrics_history.csv"
 
-    if history_file.exists():
-        existing = pd.read_csv(history_file, usecols=["run_id", "report_id"])
-        if not existing.empty:
-            existing_keys = set(zip(existing["run_id"], existing["report_id"]))
-            incoming_keys = list(zip(df["run_id"], df["report_id"]))
-            duplicates = [k for k in incoming_keys if k in existing_keys]
-            if duplicates:
-                dup_str = ", ".join(
-                    f"(run_id={r}, report_id={p})" for r, p in duplicates[:5]
-                )
-                raise ValueError(
-                    f"metrics_history already contains {len(duplicates)} duplicate "
-                    f"key(s). First duplicates: {dup_str}. "
-                    "Pass a new run_id for each pipeline execution."
-                )
+    with csv_write_lock(history_file):
+        existing_rows = 0
+        if history_file.exists():
+            existing = pd.read_csv(history_file, usecols=["run_id", "report_id"])
+            existing_rows = len(existing)
+            if not existing.empty:
+                existing_keys = set(zip(existing["run_id"], existing["report_id"]))
+                incoming_keys = list(zip(df["run_id"], df["report_id"]))
+                duplicates = [k for k in incoming_keys if k in existing_keys]
+                if duplicates:
+                    dup_str = ", ".join(
+                        f"(run_id={r}, report_id={p})" for r, p in duplicates[:5]
+                    )
+                    raise ValueError(
+                        f"metrics_history already contains {len(duplicates)} duplicate "
+                        f"key(s). First duplicates: {dup_str}. "
+                        "Pass a new run_id for each pipeline execution."
+                    )
 
-    write_header = not history_file.exists()
-    df.to_csv(history_file, mode="a", index=False, header=write_header)
+        log_write_plan(
+            target=history_file,
+            candidate_rows=len(df),
+            existing_rows=existing_rows,
+            new_rows=len(df),
+            skipped_rows=0,
+        )
+        write_header = not history_file.exists()
+        df.to_csv(history_file, mode="a", index=False, header=write_header)
+
     return history_file
 
 
@@ -1200,6 +1266,14 @@ def _validate_realized_errors_history(existing: pd.DataFrame) -> None:
 def update_realized_errors(raw_df: pd.DataFrame, project_root: Path) -> pd.DataFrame:
     """Backfill actual errors for historical forecasts whose dates have arrived.
 
+    .. deprecated::
+        ``update_realized_errors`` writes to the legacy
+        ``realized_errors_history.csv`` schema and is retained only for the
+        legacy ``run_pipeline`` path.  Production orchestration
+        (``run_production_pipeline``) uses
+        ``src.models.realized_forecast_history.update_realized_forecast_history``
+        instead.  Do not call both functions in the same pipeline execution.
+
     Single-writer assumption
     ------------------------
     Uses append-mode CSV writes with no file locking.  Safe only when a single
@@ -1238,12 +1312,9 @@ def update_realized_errors(raw_df: pd.DataFrame, project_root: Path) -> pd.DataF
         return pd.DataFrame()
 
     if realized_errors_file.exists():
-        existing = pd.read_csv(
-            realized_errors_file,
-            parse_dates={"target_date": ["target_date"]},
-        )
-        # parse_dates with a dict uses errors="raise" semantics via to_datetime;
-        # re-parse explicitly so we surface bad values immediately.
+        existing = pd.read_csv(realized_errors_file)
+        # Re-parse target_date with errors="raise" so bad values surface immediately
+        # rather than silently becoming NaT (which would corrupt dedup logic).
         try:
             existing["target_date"] = pd.to_datetime(
                 existing["target_date"], errors="raise"
@@ -1735,23 +1806,39 @@ def run_production_pipeline(
         candidate_summary=model_summary,
     )
 
-    # Also run legacy history + realized-error updates for backward compatibility
-    realized_errors = update_realized_errors(model_input, project_root)
+    # Step 7: Update normalized realized forecast history.
+    # Runs only after production_forecasts_history.csv has been written by
+    # save_production_outputs (Step 6) so the canonical source is available.
+    # Uses daily_series (the mart_report_daily_series frame) as the only
+    # source of actuals.  update_realized_errors is NOT called here.
+    from src.models.realized_forecast_history import (
+        update_realized_forecast_history as _update_rfh,
+    )
+    realized_rows, n_skipped = _update_rfh(
+        raw_actuals_df=daily_series,
+        project_root=project_root,
+        realized_at=generated_at,
+    )
 
     n_selected = int(selection["selection_status"].eq("selected").sum()) if not selection.empty else 0
     n_eligible = len(passing_ids)
     n_reports_total = len(data_diag)
+    n_candidates = len(production_df[production_df["horizon_step"].notna()])
 
     print(f"RUN_ID: {run_id}")
     print(f"Input: {input_path.relative_to(project_root)}")
     print(f"Reports: {n_eligible}/{n_reports_total} passed data criteria")
     print(f"Models selected: {n_selected}/{n_eligible} eligible reports")
-    print(f"Production forecast rows: {len(production_df[production_df['horizon_step'].notna()])}")
+    print(f"Production forecast rows: {n_candidates}")
     for name, path in output_paths.items():
         if path:
             print(f"Saved [{name}]: {path.relative_to(project_root)}")
-    if not realized_errors.empty:
-        print(f"Realized error rows added: {len(realized_errors)}")
+    print(
+        f"Realized forecast history: "
+        f"{len(realized_rows)} new row(s) appended, "
+        f"{n_skipped} already-realized row(s) skipped "
+        f"(of {len(realized_rows) + n_skipped} candidates)"
+    )
 
     return {
         "run_id": run_id,
@@ -1764,6 +1851,8 @@ def run_production_pipeline(
         "data_diagnostics": data_diag,
         "data_quality": dq_table,
         "output_paths": output_paths,
+        "realized_rows": realized_rows,
+        "n_realized_skipped": n_skipped,
     }
 
 
