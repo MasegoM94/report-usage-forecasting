@@ -1927,6 +1927,49 @@ def run_production_pipeline(
         print(f"Warning: residual dataset generation failed: {_exc}")
         _diag_paths = {}
 
+    # Step 9 (pre): Residual autocorrelation diagnostics.
+    # Runs after residual datasets are built.  Failures are isolated.
+    try:
+        from src.models.autocorrelation_diagnostics import (
+            build_training_autocorrelation_diagnostics,
+            build_backtest_autocorrelation_diagnostics,
+            build_production_autocorrelation_diagnostics,
+            persist_autocorrelation_diagnostics,
+        )
+        from src.models.residual_datasets import (
+            build_training_residual_dataset,
+            build_backtest_forecast_error_dataset,
+            build_production_forecast_error_view,
+        )
+        _tr_res_df = build_training_residual_dataset(
+            training_residual_records,
+            diagnostic_run_id=run_id,
+            evaluation_run_id=run_id,
+            name_lookup=name_lookup,
+        )
+        _bt_preds_path = output_paths.get("backtest_predictions")
+        _bt_preds_df = pd.read_csv(_bt_preds_path) if (_bt_preds_path and Path(_bt_preds_path).exists()) else pd.DataFrame()
+        _bt_res_df = build_backtest_forecast_error_dataset(
+            _bt_preds_df, evaluation_run_id=run_id, name_lookup=name_lookup
+        ) if not _bt_preds_df.empty else pd.DataFrame()
+        _realized_path = project_root / "outputs" / "metrics" / "realized_forecast_history.csv"
+        _real_df = pd.read_csv(_realized_path) if _realized_path.exists() else pd.DataFrame()
+        _prod_res_df = build_production_forecast_error_view(_real_df) if not _real_df.empty else pd.DataFrame()
+
+        _tr_acf = build_training_autocorrelation_diagnostics(_tr_res_df, diagnostic_run_id=run_id)
+        _bt_fold_acf, _bt_sum_acf = build_backtest_autocorrelation_diagnostics(_bt_res_df, evaluation_run_id=run_id)
+        _prod_acf = build_production_autocorrelation_diagnostics(_prod_res_df, evaluation_run_id=run_id)
+
+        _acf_paths = persist_autocorrelation_diagnostics(
+            _tr_acf, _bt_fold_acf, _bt_sum_acf, _prod_acf, project_root
+        )
+        for name, path in _acf_paths.items():
+            if path:
+                print(f"Saved [acf_{name}]: {path.relative_to(project_root)}")
+    except Exception as _acf_exc:
+        print(f"Warning: autocorrelation diagnostics failed: {_acf_exc}")
+        _acf_paths = {}
+
     # Step 9: Aggregate production performance monitoring tables.
     # Runs after realized history is updated so the tables always reflect the
     # latest realized rows.  Written to outputs/monitoring/ as CSV overwrites
