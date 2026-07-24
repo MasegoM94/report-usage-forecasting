@@ -146,6 +146,35 @@ def normalize_report_columns(df: pd.DataFrame) -> pd.DataFrame:
     return renamed
 
 
+# Columns that must be present in report_features when the file is non-empty.
+# Raising here instead of displaying NaN surfaces a rename early and clearly.
+_REPORT_FEATURES_REQUIRED_COLS: set[str] = {
+    "report_id",
+    "top_1_user_view_share",
+}
+
+
+def validate_report_features_schema(df: pd.DataFrame) -> None:
+    """Raise ValueError if *df* is missing required report_features columns.
+
+    Called by ``load_app_data`` whenever ``report_features`` is non-empty so
+    that a future rename of ``top_1_user_view_share`` fails clearly rather than
+    silently displaying NaN in the Streamlit app.
+
+    Does nothing when *df* is empty (file absent or unreadable).
+    """
+    if df.empty:
+        return
+    missing = _REPORT_FEATURES_REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise ValueError(
+            "report_features is missing required column(s): "
+            f"{sorted(missing)}. "
+            "If the field was renamed, update src/app/streamlit_app.py and "
+            "this validation list together."
+        )
+
+
 def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
     """Load all app inputs from outputs/* into a keyed dictionary."""
     base = root or project_root()
@@ -157,6 +186,8 @@ def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
             data[key] = normalize_report_columns(read_json_records(path))
         else:
             data[key] = normalize_report_columns(read_csv(path))
+
+    validate_report_features_schema(data.get("report_features", pd.DataFrame()))
     return data
 
 

@@ -569,12 +569,12 @@ def render_behaviour_insights(
     )
     metric_with_help(
         col3,
-        "Top-user concentration",
-        fmt_percent(feature_row.get("top_user_concentration")),
-        "The share of total report views driven by the top handful of users. "
-        "A high concentration means a small group is responsible for most of the traffic, "
-        "which can be a risk if those users leave or change roles. A lower concentration "
-        "suggests broader, more resilient usage across the organisation.",
+        "Top user share",
+        fmt_percent(feature_row.get("top_1_user_view_share")),
+        "The share of total report views attributable to the single most active user. "
+        "A high value means one person drives most of the traffic, which is a dependency "
+        "risk if that user leaves or changes roles. A lower value suggests broader, "
+        "more resilient usage across the organisation.",
     )
     metric_with_help(
         col4,
