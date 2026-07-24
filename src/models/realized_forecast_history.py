@@ -115,6 +115,7 @@ REALIZED_FORECAST_HISTORY_COLS: list[str] = [
     "squared_error",
     "inside_interval",
     "interval_width",
+    "nominal_coverage",   # 0.95 for live rows; null for legacy rows where level is unknown
     # optional
     "percentage_error",
     # lineage completeness flags (populated during migration; null for live rows)
@@ -378,8 +379,11 @@ def validate_realized_forecast_history(df: pd.DataFrame) -> None:
     ValueError
         On the first violated invariant with a clear, actionable message.
     """
-    # 1. Required columns
-    missing_cols = set(REALIZED_FORECAST_HISTORY_COLS) - set(df.columns)
+    # 1. Required columns (nominal_coverage is new — tolerate its absence for
+    #    backwards-compatibility with existing history files written before this field
+    #    was introduced; legacy rows will have null values once the column is added)
+    _optional_cols = {"nominal_coverage"}
+    missing_cols = (set(REALIZED_FORECAST_HISTORY_COLS) - _optional_cols) - set(df.columns)
     if missing_cols:
         raise ValueError(
             f"Realized forecast history is missing {len(missing_cols)} required "

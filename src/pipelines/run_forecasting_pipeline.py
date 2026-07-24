@@ -2022,6 +2022,33 @@ def run_production_pipeline(
         print(f"Warning: outlier/distribution diagnostics failed: {_outlier_exc}")
         _outlier_paths = {}
 
+    # Step 9 (pre-4): Prediction-interval calibration and scoring diagnostics.
+    try:
+        from src.models.interval_calibration_diagnostics import (
+            build_backtest_interval_diagnostics_by_fold,
+            build_backtest_interval_diagnostics_summary,
+            build_production_interval_diagnostics,
+            persist_interval_calibration_diagnostics,
+        )
+        _bt_interval_fold = build_backtest_interval_diagnostics_by_fold(
+            _bt_res_df, evaluation_run_id=run_id
+        ) if not _bt_res_df.empty else pd.DataFrame()
+        _bt_interval_sum = build_backtest_interval_diagnostics_summary(
+            _bt_interval_fold, backtest_df=_bt_res_df, evaluation_run_id=run_id
+        )
+        _prod_interval = build_production_interval_diagnostics(
+            _prod_res_df, evaluation_run_id=run_id
+        ) if not _prod_res_df.empty else pd.DataFrame()
+        _interval_paths = persist_interval_calibration_diagnostics(
+            _bt_interval_fold, _bt_interval_sum, _prod_interval, project_root
+        )
+        for name, path in _interval_paths.items():
+            if path:
+                print(f"Saved [interval_{name}]: {path.relative_to(project_root)}")
+    except Exception as _interval_exc:
+        print(f"Warning: interval calibration diagnostics failed: {_interval_exc}")
+        _interval_paths = {}
+
     # Step 9: Aggregate production performance monitoring tables.
     # Runs after realized history is updated so the tables always reflect the
     # latest realized rows.  Written to outputs/monitoring/ as CSV overwrites

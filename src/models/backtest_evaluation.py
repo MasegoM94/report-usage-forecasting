@@ -143,6 +143,7 @@ _PRED_COLS_EXT = [
     "autocorrelation_at_m", "spectral_power_at_m",
     "seasonality_status", "candidate_source",
     "actual", "forecast", "lower_bound", "upper_bound", "fit_status",
+    "nominal_coverage",   # 0.95 for all candidates (alpha=0.05 hardcoded in forecast functions)
 ]
 
 _METRIC_COLS_EXT = [
@@ -263,6 +264,7 @@ def _build_prediction_rows(
                 "lower_bound": np.nan,
                 "upper_bound": np.nan,
                 "fit_status": "failed",
+                "nominal_coverage": 0.95,
             }
             for i, (date, step) in enumerate(zip(test.index, horizon_steps))
         ]
@@ -292,6 +294,7 @@ def _build_prediction_rows(
             "lower_bound": float(lo_aligned.iloc[i]) if lo_aligned is not None and pd.notna(lo_aligned.iloc[i]) else np.nan,
             "upper_bound": float(hi_aligned.iloc[i]) if hi_aligned is not None and pd.notna(hi_aligned.iloc[i]) else np.nan,
             "fit_status": fit_status,
+            "nominal_coverage": 0.95,
         })
     return rows
 

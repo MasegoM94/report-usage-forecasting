@@ -171,6 +171,7 @@ BACKTEST_FORECAST_ERRORS_COLS: list[str] = [
     "upper_bound",
     "inside_interval",
     "interval_width",
+    "nominal_coverage",             # e.g. 0.95 for a 95% interval; null when unknown
     "residual_source",              # always "backtest"
     "residual_observation_valid",   # bool
 ]
@@ -203,6 +204,7 @@ PRODUCTION_FORECAST_ERRORS_COLS: list[str] = [
     "upper_bound",
     "inside_interval",
     "interval_width",
+    "nominal_coverage",             # e.g. 0.95; null for legacy rows where level is unknown
     "residual_source",              # always "production"
     "residual_observation_valid",   # bool
 ]

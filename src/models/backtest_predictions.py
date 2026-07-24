@@ -139,6 +139,7 @@ _IDENTITY_COLS: list[str] = [
     "lower_bound",
     "upper_bound",
     "fit_status",
+    "nominal_coverage",   # e.g. 0.95 for a 95% PI; null when unknown
 ]
 
 # Derived fields appended by this module
@@ -156,8 +157,8 @@ BACKTEST_PREDICTIONS_COLS: list[str] = (
     ["evaluation_run_id"] + _IDENTITY_COLS + _DERIVED_COLS
 )
 
-# Minimum required input columns (evaluation_run_id is optional at input time)
-_REQUIRED_INPUT_COLS: set[str] = set(_IDENTITY_COLS)
+# Minimum required input columns (evaluation_run_id and nominal_coverage are optional at input time)
+_REQUIRED_INPUT_COLS: set[str] = set(_IDENTITY_COLS) - {"nominal_coverage"}
 
 # Unique key
 _UNIQUE_KEY: list[str] = [

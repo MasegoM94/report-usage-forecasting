@@ -102,6 +102,7 @@ PRODUCTION_FORECAST_COLS = [
     "production_fit_status",
     "fallback_used",
     "fallback_reason",
+    "nominal_coverage",   # 0.95 for all production forecasts (alpha=0.05); null for legacy rows
 ]
 
 # ---------------------------------------------------------------------------
@@ -262,6 +263,7 @@ def _failure_row(
         "production_fit_status": production_fit_status,
         "fallback_used": fallback_used,
         "fallback_reason": fallback_reason,
+        "nominal_coverage": np.nan,  # failure rows have no interval
     }
 
 
@@ -318,6 +320,7 @@ def _forecast_rows(
             "production_fit_status": production_fit_status,
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
+            "nominal_coverage": 0.95,
         })
     return rows
 
