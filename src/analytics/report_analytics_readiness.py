@@ -41,6 +41,12 @@ ENGAGEMENT_PROHIBITED_COLS = frozenset({
     "unique_user", "principal_name",
 })
 
+FORECAST_OUTLOOK_REQUIRED_COLS = frozenset({
+    "forecast_run_id", "report_id", "forecast_as_of_date",
+    "forecast_horizon_sufficient_28d", "forecast_evidence_status",
+    "forecast_outlook_status",
+})
+
 MODEL_DIAGNOSTICS_REQUIRED_COLS = frozenset({
     "report_id", "generated_at",
     "model_diagnostic_status", "primary_model_issue", "recommended_model_action",
@@ -243,11 +249,64 @@ def validate_model_diagnostics_readiness(
     )
 
 
+def validate_forecast_outlook_readiness(
+    file_path: Path,
+    features_as_of_date: Optional[str] = None,
+    max_staleness_days: int = 30,
+) -> dict:
+    name = "forecast_outlook"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    reasons = []
+    present_cols = set(df.columns)
+    missing = FORECAST_OUTLOOK_REQUIRED_COLS - present_cols
+    schema_valid = len(missing) == 0
+    if missing:
+        reasons.append(f"missing_required_columns:{sorted(missing)}")
+
+    grain_valid = not df.duplicated(subset=["report_id"]).any()
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    lineage_valid = all(c in present_cols for c in ["forecast_run_id", "forecast_as_of_date"])
+    if not lineage_valid:
+        reasons.append("missing_lineage_fields")
+
+    # Temporal alignment check
+    if features_as_of_date and "forecast_as_of_date" in present_cols and len(df) > 0:
+        fc_as_of = str(df["forecast_as_of_date"].iloc[0])
+        if fc_as_of != str(features_as_of_date):
+            reasons.append(
+                f"as_of_mismatch:features={features_as_of_date},forecast={fc_as_of}"
+            )
+
+    freshness_status, _ = _check_freshness(df, "generated_at", max_staleness_days)
+    if freshness_status == "stale":
+        reasons.append(f"stale_output:{_}")
+
+    fc_as_of_date = (
+        df["forecast_as_of_date"].iloc[0]
+        if "forecast_as_of_date" in present_cols and len(df) > 0
+        else None
+    )
+
+    return _build_result(
+        name, file_path, df, schema_valid, grain_valid, lineage_valid,
+        freshness_status, fc_as_of_date, reasons
+    )
+
+
 def validate_report_analytics_prerequisites(
     project_root: Path,
     max_feature_staleness_days: int = 7,
     max_engagement_staleness_days: int = 7,
     max_diagnostics_staleness_days: int = 30,
+    max_forecast_outlook_staleness_days: int = 30,
 ) -> list[dict]:
     results = []
     results.append(validate_report_features_readiness(
@@ -261,6 +320,10 @@ def validate_report_analytics_prerequisites(
     results.append(validate_model_diagnostics_readiness(
         project_root / "outputs" / "diagnostics" / "report_model_diagnostics.csv",
         max_diagnostics_staleness_days,
+    ))
+    results.append(validate_forecast_outlook_readiness(
+        project_root / "outputs" / "analytics" / "report_forecast_outlook.csv",
+        max_staleness_days=max_forecast_outlook_staleness_days,
     ))
     return results
 
