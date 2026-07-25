@@ -484,3 +484,74 @@ The following fields are deprecated and must not be used in Sprint 6+ outputs:
 4. Add optional open-source forecasting model comparison.
 5. Add GenAI output evaluation or prompt quality checks.
 
+
+## Sprint 6 — User Engagement and Adoption Analytics
+
+Sprint 6 adds a complete, privacy-safe user engagement analytics layer. All outputs are
+**report-level** — no individual user data, email addresses, or direct identifiers appear
+in any analytics output file.
+
+### What Sprint 6 produces
+
+**Privacy-safe report-user-day mart** (`mart_report_user_daily`)
+- Pseudonymous user keys only (`user_key`); never joined to `dim_user.csv`
+- One row per (report, user_key, usage_date) with positive usage
+- Includes lifetime history fields (`first_report_use_date`, `lifetime_returned_flag`)
+- Source quality classification applied before mart build
+
+**Complete observation windows**
+- 7-day, 28-day, previous 28-day, 90-day windows anchored to the data as-of date
+- Deterministic window computation from mart max date (not `datetime.now()`)
+- History sufficiency checks gate metric computation per report per window
+
+**Active-user breadth metrics**
+- Unique users per window (7d, 28d, previous 28d, 90d)
+- Active-user direction: growing, stable, declining
+- Returning user share and one-time user share (canonical returning = 2+ distinct dates)
+
+**Engagement cohorts**
+- Newly adopted, retained, reactivated, lapsed, and unclassified recent users
+- Lapse rate over previous cohort denominator; all other shares over recent cohort denominator
+- Requires comparison window sufficiency (both recent and previous 28d covered)
+
+**Frequency and intensity**
+- Views per active user, views per user-day, median active days per user
+- Return-gap analysis (mean and median days between visits for returning users)
+
+**Concentration and HHI**
+- Top-1, top-3, and top-10% user view shares
+- Herfindahl-Hirschman Index (HHI) and effective user count
+- Suppressed for small groups (below `PrivacyConfig.MIN_GROUP_SIZE`)
+
+**Final engagement mart** (`mart_report_engagement`)
+- One row per report with full engagement status classification
+- Priority-ordered status hierarchy (14 possible statuses)
+- Standardised recommended action (no retire/delete recommendations)
+- Plain-language engagement reasons for downstream consumers
+
+### Notebook
+
+Walkthrough of all Sprint 6 analytics:
+```
+notebooks/07_user_analytics.ipynb
+```
+
+### No GenAI or Streamlit integration in Sprint 6
+
+Sprint 6 produces CSV outputs only. The GenAI insight layer and Streamlit dashboard
+are planned for a future sprint. `mart_report_engagement` is designed as input for
+those consumers but does not integrate with them yet.
+
+### No report-retirement decisions
+
+No Sprint 6 output recommends retiring, deleting, or restricting access to any report.
+Engagement volume does not determine business value. All recommended actions are limited
+to monitoring, investigation, and data quality review.
+
+### Documentation
+
+| File | Contents |
+|------|----------|
+| `docs/data_dictionary_sprint6.md` | Column-level definitions for all 9 Sprint 6 output files |
+| `docs/user_analytics_methodology.md` | Metric formulas, cohort denominators, suppression policy |
+| `docs/deprecated_fields_sprint6.md` | Deprecated fields and their Sprint 6 replacements |

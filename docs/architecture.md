@@ -203,3 +203,65 @@ is null for still-active reports. Days before `launch_date` and after
 - Optional open-source forecasting model comparison (Prophet, statsforecast).
 - GenAI evaluation for insight quality and consistency.
 - Streamlit reviewer app with forecast exploration, behavioural diagnostics, and AI insight tabs.
+
+---
+
+## Sprint 6 — User Engagement Analytics Data Flow
+
+```
+Privacy-safe report usage fact (mart_report_user_daily)
+  [pseudonymous user_key only; dim_user.csv RESTRICTED — not joined]
+        |
+        v
+Complete engagement window boundaries
+  [deterministic from mart max date; 7d, 28d, prev 28d, 90d]
+        |
+        v  [history sufficiency gate — per report per window]
+        |
+        +---> Activity metrics         (breadth, returning/one-time users)
+        |     (report_user_activity_metrics)
+        |
+        +---> Cohort metrics           (newly adopted, retained, reactivated, lapsed)
+        |     (report_engagement_cohorts)
+        |
+        +---> Frequency metrics        (views/user, return gap, active days)
+        |     (report_user_frequency_metrics)
+        |
+        +---> Concentration metrics    (HHI, top-user shares, effective user count)
+              (report_user_concentration_metrics)
+                    |
+                    v  [privacy suppression applied if users < MIN_GROUP_SIZE]
+                    |
+        +-----------+
+        |
+        v
+Deterministic engagement status classification
+  [priority-ordered: no_valid_data > privacy_limited > insufficient_evidence
+   > inactive > newly_active > declining > elevated_lapse > concentrated_dependency
+   > low_repeat > growing > healthy_broad > healthy_niche > stable]
+        |
+        v
+mart_report_engagement (report-level only; no user_key column)
+        |
+        +---> Sprint 7 report analytics (planned)
+        +---> Streamlit dashboard (future consumer)
+        +---> GenAI insights layer (future consumer)
+```
+
+### Mart boundary rules for Sprint 6
+
+| Boundary | Rule |
+|----------|------|
+| dim_user.csv | RESTRICTED — must never be joined into analytics outputs |
+| mart_report_user_daily | Contains user_key (pseudonymous). Must not display user_key values in UI or notebooks |
+| mart_report_engagement | Privacy-safe. Report-level only. Safe for dashboard and downstream consumers |
+| GenAI / Streamlit | Future consumers only. Sprint 6 does not invoke either layer |
+
+### What Sprint 6 does NOT do
+
+- Does not join `dim_user.csv` to any output
+- Does not display individual user keys in notebooks or dashboards
+- Does not write to the forecasting pipeline outputs
+- Does not modify report diagnostics or report segmentation files
+- Does not make report retirement or deletion recommendations
+- Does not invoke the GenAI layer or Streamlit app
