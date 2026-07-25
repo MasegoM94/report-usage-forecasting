@@ -6,6 +6,8 @@ Usage:
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone, date
 from pathlib import Path
 
 import pandas as pd
@@ -73,6 +75,10 @@ def run_pipeline(project_root: Path | None = None) -> dict[str, Path]:
     dim_report = read_csv_if_exists(processed_dir / "dim_report.csv")
     dim_date = read_csv_if_exists(processed_dir / "dim_date.csv")
 
+    analytics_run_id = str(uuid.uuid4())
+    generated_at = datetime.now(timezone.utc).isoformat()
+    analytics_as_of_date = str(date.today())
+
     report_features = build_report_features(
         daily_adoption=daily_usage,
         fact_report_views=fact_report_views,
@@ -80,10 +86,25 @@ def run_pipeline(project_root: Path | None = None) -> dict[str, Path]:
         dim_report=dim_report,
         dim_date=dim_date,
     )
+    # Attach lineage fields at the persistence layer (keeps builder pure).
+    report_features.insert(1, "analytics_run_id", analytics_run_id)
+    report_features.insert(2, "generated_at", generated_at)
+    report_features.insert(3, "analytics_as_of_date", analytics_as_of_date)
+
+    # Build downstream outputs before dropping deprecated columns
+    # (report_segmentation uses repeat_rate internally).
     report_segments = build_report_segments(report_features)
     report_diagnostics = build_report_diagnostics(report_features, report_segments)
 
-    report_features.to_csv(output_paths["features"], index=False)
+    # Drop deprecated columns at the persistence layer only.
+    # repeat_rate is superseded by returning_user_share_28d in the engagement mart.
+    _DEPRECATED_COLS = {"repeat_rate", "usage_change_pct", "latest_views",
+                        "prior_views", "top_user_concentration"}
+    report_features_out = report_features.drop(
+        columns=[c for c in _DEPRECATED_COLS if c in report_features.columns]
+    )
+
+    report_features_out.to_csv(output_paths["features"], index=False)
     report_segments.to_csv(output_paths["segments"], index=False)
     report_diagnostics.to_csv(output_paths["diagnostics"], index=False)
 
