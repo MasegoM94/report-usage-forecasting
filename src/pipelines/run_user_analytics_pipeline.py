@@ -123,6 +123,48 @@ def _run_report_user_daily_step(
         f"report_user_data_quality: {len(quality_df):,} rows → {paths['quality']}"
     )
 
+    # ── Step: Engagement window boundaries and report history sufficiency ───
+    try:
+        from src.analytics.engagement_windows import (
+            EngagementWindowConfig,
+            build_engagement_window_boundaries,
+            build_report_history_sufficiency,
+            persist_engagement_window_outputs,
+        )
+
+        _ew_cfg = EngagementWindowConfig()
+        _boundaries = build_engagement_window_boundaries(
+            mart_df=mart_df,
+            cfg=_ew_cfg,
+            analytics_run_id=analytics_run_id,
+        )
+
+        # Load report metadata spine
+        _report_meta_path = processed_dir / "dim_report.csv"
+        _report_meta_df = pd.read_csv(_report_meta_path) if _report_meta_path.exists() else pd.DataFrame()
+        if _report_meta_df.empty:
+            # Fallback: derive report spine from mart
+            _report_meta_df = (
+                mart_df[["report_id"]].drop_duplicates()
+                .assign(report_name=None, report_activation_date=None)
+            )
+
+        _sufficiency_df = build_report_history_sufficiency(
+            report_meta_df=_report_meta_df,
+            mart_df=mart_df,
+            quality_df=quality_df,
+            boundaries=_boundaries,
+            cfg=_ew_cfg,
+            analytics_run_id=analytics_run_id,
+        )
+        _window_paths = persist_engagement_window_outputs(_boundaries, _sufficiency_df, root)
+        print(f"  Engagement windows: {_boundaries.analytics_as_of_date}")
+        print(f"  History sufficiency: {len(_sufficiency_df)} reports → {_window_paths['sufficiency']}")
+    except Exception as _ew_exc:
+        import traceback
+        print(f"Warning: engagement windows step failed: {_ew_exc}")
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
     run_pipeline()
