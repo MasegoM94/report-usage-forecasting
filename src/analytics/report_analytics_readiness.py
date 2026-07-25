@@ -52,6 +52,11 @@ MODEL_DIAGNOSTICS_REQUIRED_COLS = frozenset({
     "model_diagnostic_status", "primary_model_issue", "recommended_model_action",
 })
 
+MODEL_HEALTH_CONTEXT_REQUIRED_COLS = frozenset({
+    "diagnostic_run_id", "report_id", "model_diagnostic_status",
+    "forecast_interpretation_status", "recommended_model_action",
+})
+
 ALLOWED_READINESS_STATUSES = frozenset({
     "ready", "stale", "schema_mismatch", "missing",
     "invalid_grain", "incomplete_lineage", "generation_failed",
@@ -249,6 +254,51 @@ def validate_model_diagnostics_readiness(
     )
 
 
+def validate_model_health_context_readiness(
+    file_path: Path,
+    max_staleness_days: int = 30,
+) -> dict:
+    name = "model_health_context"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    reasons = []
+    present_cols = set(df.columns)
+    missing = MODEL_HEALTH_CONTEXT_REQUIRED_COLS - present_cols
+    schema_valid = len(missing) == 0
+    if missing:
+        reasons.append(f"missing_required_columns:{sorted(missing)}")
+
+    grain_valid = not df.duplicated(subset=["report_id"]).any()
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    lineage_valid = "diagnostic_run_id" in present_cols and "generated_at" in present_cols
+    if not lineage_valid:
+        reasons.append("missing_lineage_fields")
+
+    # Safety check
+    if "automatic_retraining_triggered" in present_cols:
+        if df["automatic_retraining_triggered"].any():
+            reasons.append("automatic_retraining_triggered_is_true")
+            schema_valid = False
+
+    freshness_status, as_of = _check_freshness(df, "generated_at", max_staleness_days)
+    if freshness_status == "stale":
+        reasons.append(f"stale_output:{as_of}")
+
+    diag_run_at = df["generated_at"].max() if "generated_at" in present_cols and len(df) > 0 else None
+
+    return _build_result(
+        name, file_path, df, schema_valid, grain_valid, lineage_valid,
+        freshness_status, diag_run_at, reasons
+    )
+
+
 def validate_forecast_outlook_readiness(
     file_path: Path,
     features_as_of_date: Optional[str] = None,
@@ -324,6 +374,9 @@ def validate_report_analytics_prerequisites(
     results.append(validate_forecast_outlook_readiness(
         project_root / "outputs" / "analytics" / "report_forecast_outlook.csv",
         max_staleness_days=max_forecast_outlook_staleness_days,
+    ))
+    results.append(validate_model_health_context_readiness(
+        project_root / "outputs" / "analytics" / "report_model_health_context.csv",
     ))
     return results
 
