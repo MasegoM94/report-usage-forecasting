@@ -264,5 +264,32 @@ def _run_report_user_daily_step(
         traceback.print_exc()
 
 
+    # ── Step: Canonical report engagement mart ─────────────────────────────
+    try:
+        from src.analytics.report_engagement_status import EngagementStatusConfig
+        from src.analytics.report_engagement_mart import (
+            build_report_engagement_mart,
+            persist_report_engagement_mart,
+        )
+        _mart_cfg = EngagementStatusConfig()
+        _engagement_mart_df = build_report_engagement_mart(
+            sufficiency_df=_sufficiency_input,
+            activity_df=_activity_df,          # in memory from step above
+            cohort_df=_cohort_df,              # in memory
+            frequency_df=_freq_df,             # in memory
+            concentration_df=_conc_df,         # in memory
+            quality_df=quality_df,             # in memory
+            boundaries_df=_boundaries_input,   # in memory
+            cfg=_mart_cfg,
+            analytics_run_id=analytics_run_id,
+        )
+        _engagement_mart_path = persist_report_engagement_mart(_engagement_mart_df, root)
+        print(f"  Engagement mart: {len(_engagement_mart_df)} reports → {_engagement_mart_path}")
+    except Exception as _mart_exc:
+        import traceback
+        print(f"Warning: engagement mart step failed: {_mart_exc}")
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
     run_pipeline()
