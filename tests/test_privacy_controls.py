@@ -112,7 +112,7 @@ class TestStreamlitLoading:
             "data/processed/mart_report_daily_context.csv": ["report_id", "daily_views"],
             "outputs/forecasts/report_view_forecasts_latest.csv": ["report_id", "date", "forecast"],
             "outputs/metrics/report_view_metrics_latest.csv": ["report_id", "forecast_reliable"],
-            "outputs/metrics/report_features.csv": ["report_id", "top_1_user_view_share"],
+            "outputs/metrics/report_features.csv": ["report_id", "analytics_as_of_date", "schema_version", "historical_usage_status"],
             "outputs/segments/report_segments.csv": ["report_id", "report_segment"],
             "data/processed/dim_report.csv": ["report_id", "report_name"],
             "data/processed/fact_report_views.csv": ["date_key", "report_id", "user_key", "view_count"],

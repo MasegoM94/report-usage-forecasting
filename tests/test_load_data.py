@@ -91,19 +91,34 @@ class TestConcentrationFieldContract:
 # ---------------------------------------------------------------------------
 
 class TestValidateReportFeaturesSchema:
+    def _make_v2(self, **overrides):
+        row = {
+            "report_id": "R001",
+            "analytics_as_of_date": "2026-03-31",
+            "schema_version": "2.0.0",
+            "historical_usage_status": "stable_regular_usage",
+        }
+        row.update(overrides)
+        return pd.DataFrame([row])
+
     def test_valid_df_passes(self):
-        """A DataFrame with all required columns passes without error."""
-        df = _make_report_features()
+        """A v2 DataFrame with all required columns passes without error."""
+        df = self._make_v2()
+        validate_report_features_schema(df)  # must not raise
+
+    def test_extra_columns_allowed(self):
+        """Extra columns beyond the required set are fine."""
+        df = self._make_v2(extra_col="x")
         validate_report_features_schema(df)  # must not raise
 
     def test_empty_df_passes(self):
         """An empty DataFrame (file missing or unreadable) is always valid."""
         validate_report_features_schema(pd.DataFrame())  # must not raise
 
-    def test_missing_concentration_field_raises(self):
-        """Removing top_1_user_view_share raises ValueError with a clear message."""
+    def test_missing_v2_field_raises(self):
+        """A DataFrame missing v2 required fields raises ValueError."""
         df = pd.DataFrame([{"report_id": "R1", "some_other_col": 1}])
-        with pytest.raises(ValueError, match="top_1_user_view_share"):
+        with pytest.raises(ValueError):
             validate_report_features_schema(df)
 
     def test_error_message_names_the_column(self):
@@ -111,7 +126,8 @@ class TestValidateReportFeaturesSchema:
         df = pd.DataFrame([{"report_id": "R1"}])
         with pytest.raises(ValueError) as exc_info:
             validate_report_features_schema(df)
-        assert "top_1_user_view_share" in str(exc_info.value)
+        # Should mention one of the missing v2 required cols
+        assert any(col in str(exc_info.value) for col in ["analytics_as_of_date", "schema_version", "historical_usage_status"])
 
     def test_error_message_suggests_fix(self):
         """The error message points to streamlit_app.py so the fix location is obvious."""
@@ -122,13 +138,13 @@ class TestValidateReportFeaturesSchema:
 
     def test_missing_report_id_raises(self):
         """report_id is also required; its absence must be flagged."""
-        df = pd.DataFrame([{"top_1_user_view_share": 0.5}])
+        df = pd.DataFrame([{"analytics_as_of_date": "2026-03-31", "schema_version": "2.0.0", "historical_usage_status": "x"}])
         with pytest.raises(ValueError, match="report_id"):
             validate_report_features_schema(df)
 
     def test_extra_columns_allowed(self):
-        """Additional columns (e.g. top_10pct_user_share) are permitted."""
-        df = _make_report_features(top_10pct_user_share=0.65, repeat_rate=0.3)
+        """Additional columns beyond the required set are permitted."""
+        df = self._make_v2(extra_col="x", another_col=42)
         validate_report_features_schema(df)  # must not raise
 
 

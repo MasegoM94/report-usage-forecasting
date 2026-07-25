@@ -41,13 +41,16 @@ def _make_features(n: int = 5, *, run_id: str | None = None, ts: str | None = No
         "analytics_run_id": run_id,
         "generated_at": ts,
         "analytics_as_of_date": "2024-03-31",
+        "schema_version": "2.0.0",
         "report_name": f"Report {i}",
         "recent_28d_views": 100,
         "previous_28d_views": 90,
-        "usage_change_28d_pct": 11.1,
-        "top_1_user_view_share": 0.2,
-        "days_active": 20,
-        "avg_views": 10.0,
+        "history_sufficient_28d": True,
+        "comparison_history_sufficient_28d": True,
+        "usage_direction_28d": "stable",
+        "usage_change_materiality": "immaterial",
+        "historical_usage_status": "stable_regular_usage",
+        "primary_historical_usage_issue": "none",
     } for i in range(n)])
 
 

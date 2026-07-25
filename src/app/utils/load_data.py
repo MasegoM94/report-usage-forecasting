@@ -350,8 +350,11 @@ def load_monitoring_data(
 # Columns that must be present in report_features when the file is non-empty.
 # Raising here instead of displaying NaN surfaces a rename early and clearly.
 _REPORT_FEATURES_REQUIRED_COLS: set[str] = {
+    # v2.0.0 schema — top_1_user_view_share moved to mart_report_engagement
     "report_id",
-    "top_1_user_view_share",
+    "analytics_as_of_date",
+    "schema_version",
+    "historical_usage_status",
 }
 
 

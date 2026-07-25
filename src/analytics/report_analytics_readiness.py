@@ -16,13 +16,19 @@ READINESS_SCHEMA_VERSION = "1.0.0"
 
 # Canonical field sets (what Sprint 7 requires from each prerequisite)
 REPORT_FEATURES_REQUIRED_COLS = frozenset({
-    "report_id", "analytics_run_id", "generated_at",
-    "recent_28d_views", "previous_28d_views", "usage_change_28d_pct",
-    "top_1_user_view_share", "days_active", "avg_views",
+    # v2.0.0 schema (evidence-aware historical feature layer)
+    "report_id", "analytics_run_id", "generated_at", "analytics_as_of_date",
+    "schema_version",
+    "recent_28d_views", "previous_28d_views",
+    "history_sufficient_28d", "comparison_history_sufficient_28d",
+    "usage_direction_28d", "usage_change_materiality",
+    "historical_usage_status", "primary_historical_usage_issue",
 })
 REPORT_FEATURES_DEPRECATED_COLS = frozenset({
+    # v1.x columns no longer present in v2
     "usage_change_pct", "latest_views", "prior_views", "top_user_concentration",
-    "repeat_rate",  # replaced by returning_user_share_28d in engagement mart
+    "repeat_rate", "avg_views", "days_active", "top_1_user_view_share",
+    "trend_history_sufficient", "usage_trend_12w_slope", "newly_active_flag",
 })
 
 ENGAGEMENT_MART_REQUIRED_COLS = frozenset({
@@ -102,9 +108,12 @@ def validate_report_features_readiness(
         reasons.append("missing_lineage_fields")
 
     # Freshness check
-    freshness_status, as_of = _check_freshness(df, "generated_at", max_staleness_days)
+    freshness_status, _ = _check_freshness(df, "generated_at", max_staleness_days)
     if freshness_status == "stale":
-        reasons.append(f"stale_output:{as_of}")
+        reasons.append(f"stale_output:{_}")
+
+    # Use source-derived analytics_as_of_date (not generated_at) for temporal alignment
+    as_of = df["analytics_as_of_date"].iloc[0] if "analytics_as_of_date" in df.columns and len(df) > 0 else None
 
     return _build_result(
         name, file_path, df, schema_valid, grain_valid, lineage_valid,
