@@ -240,5 +240,29 @@ def _run_report_user_daily_step(
         traceback.print_exc()
 
 
+    # ── Step: Report user concentration and dependency metrics ─────────────
+    try:
+        from src.analytics.user_concentration_metrics import (
+            build_report_concentration_metrics,
+            persist_report_concentration_metrics,
+            ConcentrationMetricsConfig,
+        )
+        _conc_cfg = ConcentrationMetricsConfig()
+        _conc_df = build_report_concentration_metrics(
+            sufficiency_df=_sufficiency_input,
+            mart_df=mart_df,
+            quality_df=quality_df,
+            boundaries_df=_boundaries_input,
+            cfg=_conc_cfg,
+            analytics_run_id=analytics_run_id,
+        )
+        _conc_path = persist_report_concentration_metrics(_conc_df, root)
+        print(f"  Concentration metrics: {len(_conc_df)} reports → {_conc_path}")
+    except Exception as _conc_exc:
+        import traceback
+        print(f"Warning: concentration metrics step failed: {_conc_exc}")
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
     run_pipeline()
