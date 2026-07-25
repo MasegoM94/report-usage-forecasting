@@ -216,6 +216,29 @@ def _run_report_user_daily_step(
         print(f"Warning: engagement cohorts step failed: {_cohort_exc}")
         traceback.print_exc()
 
+    # ── Step: Report usage frequency and intensity metrics ─────────────────
+    try:
+        from src.analytics.user_frequency_metrics import (
+            build_report_frequency_metrics,
+            persist_report_frequency_metrics,
+            FrequencyMetricsConfig,
+        )
+        _freq_cfg = FrequencyMetricsConfig()
+        _freq_df = build_report_frequency_metrics(
+            sufficiency_df=_sufficiency_input,
+            mart_df=mart_df,
+            quality_df=quality_df,
+            boundaries_df=_boundaries_input,
+            cfg=_freq_cfg,
+            analytics_run_id=analytics_run_id,
+        )
+        _freq_path = persist_report_frequency_metrics(_freq_df, root)
+        print(f"  Frequency metrics: {len(_freq_df)} reports → {_freq_path}")
+    except Exception as _freq_exc:
+        import traceback
+        print(f"Warning: frequency metrics step failed: {_freq_exc}")
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
     run_pipeline()
