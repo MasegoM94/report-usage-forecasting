@@ -164,6 +164,34 @@ def _run_report_user_daily_step(
         import traceback
         print(f"Warning: engagement windows step failed: {_ew_exc}")
         traceback.print_exc()
+        return  # Cannot proceed without window boundaries
+
+    # ── Step: Windowed user engagement metrics ──────────────────────────────
+    try:
+        from src.analytics.user_engagement_metrics import (
+            UserEngagementMetricsConfig,
+            build_report_user_activity_metrics,
+            persist_report_user_activity_metrics,
+        )
+        _uem_cfg = UserEngagementMetricsConfig()
+        _sufficiency_path = root / "outputs" / "analytics" / "report_engagement_history_sufficiency.csv"
+        _boundaries_path = root / "outputs" / "analytics" / "engagement_window_boundaries.csv"
+        _sufficiency_input = pd.read_csv(_sufficiency_path) if _sufficiency_path.exists() else pd.DataFrame()
+        _boundaries_input = pd.read_csv(_boundaries_path) if _boundaries_path.exists() else pd.DataFrame()
+        _activity_df = build_report_user_activity_metrics(
+            sufficiency_df=_sufficiency_input,
+            mart_df=mart_df,
+            quality_df=quality_df,
+            boundaries_df=_boundaries_input,
+            cfg=_uem_cfg,
+            analytics_run_id=analytics_run_id,
+        )
+        _activity_path = persist_report_user_activity_metrics(_activity_df, root)
+        print(f"  User activity metrics: {len(_activity_df)} reports → {_activity_path}")
+    except Exception as _uem_exc:
+        import traceback
+        print(f"Warning: user engagement metrics step failed: {_uem_exc}")
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
