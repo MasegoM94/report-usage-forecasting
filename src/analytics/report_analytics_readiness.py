@@ -68,6 +68,12 @@ ALLOWED_RECONCILIATION_STATUSES = frozenset({
     "inactive_report",
 })
 
+ENGAGEMENT_CONTEXT_REQUIRED_COLS = frozenset({
+    "analytics_run_id", "report_id", "analytics_as_of_date",
+    "engagement_evidence_status", "overall_engagement_status",
+    "engagement_interpretation_status",
+})
+
 READINESS_OUTPUT_COLS = [
     "prerequisite_name", "file_path", "file_exists", "schema_valid",
     "grain_valid", "lineage_valid", "freshness_status", "row_count",
@@ -351,6 +357,59 @@ def validate_forecast_outlook_readiness(
     )
 
 
+def validate_engagement_context_readiness(
+    file_path: Path,
+    features_as_of_date: Optional[str] = None,
+    max_staleness_days: int = 7,
+) -> dict:
+    name = "engagement_context"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    reasons = []
+    present_cols = set(df.columns)
+
+    # Schema
+    missing = ENGAGEMENT_CONTEXT_REQUIRED_COLS - present_cols
+    schema_valid = len(missing) == 0
+    if missing:
+        reasons.append(f"missing_required_columns:{sorted(missing)}")
+
+    # Privacy check
+    prohibited = {"user_key", "user_id", "email", "repeat_rate"} & present_cols
+    if prohibited:
+        reasons.append(f"prohibited_columns_present:{sorted(prohibited)}")
+        schema_valid = False
+
+    # Grain
+    grain_valid = not df.duplicated(subset=["report_id"]).any()
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    # Lineage
+    lineage_valid = all(c in present_cols for c in ["analytics_run_id", "analytics_as_of_date"])
+    if not lineage_valid:
+        reasons.append("missing_lineage_fields")
+
+    # Temporal alignment
+    if features_as_of_date and "analytics_as_of_date" in present_cols and len(df) > 0:
+        eng_as_of = str(df["analytics_as_of_date"].iloc[0])
+        if eng_as_of != str(features_as_of_date):
+            reasons.append(f"as_of_mismatch:features={features_as_of_date},engagement={eng_as_of}")
+
+    freshness_status, _ = _check_freshness(df, "generated_at", max_staleness_days)
+    as_of_date = df["analytics_as_of_date"].iloc[0] if "analytics_as_of_date" in present_cols and len(df) > 0 else None
+
+    return _build_result(
+        name, file_path, df, schema_valid, grain_valid, lineage_valid,
+        freshness_status, as_of_date, reasons
+    )
+
+
 def validate_report_analytics_prerequisites(
     project_root: Path,
     max_feature_staleness_days: int = 7,
@@ -377,6 +436,9 @@ def validate_report_analytics_prerequisites(
     ))
     results.append(validate_model_health_context_readiness(
         project_root / "outputs" / "analytics" / "report_model_health_context.csv",
+    ))
+    results.append(validate_engagement_context_readiness(
+        project_root / "outputs" / "analytics" / "report_engagement_context.csv",
     ))
     return results
 
