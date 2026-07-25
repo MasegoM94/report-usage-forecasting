@@ -6,12 +6,18 @@ Usage:
 
 from __future__ import annotations
 
+import uuid
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from src.analytics.user_features import build_user_features
 from src.analytics.user_segmentation import build_user_segments
+from src.analytics.report_user_daily import (
+    persist_report_user_daily_outputs,
+    run_report_user_daily_pipeline,
+)
 
 
 def get_project_root() -> Path:
@@ -75,7 +81,47 @@ def run_pipeline(project_root: Path | None = None) -> dict[str, Path]:
     for label, output_path in output_paths.items():
         print(f"{label}: {output_path}")
 
+    # ── Step: Report-user-day mart ──────────────────────────────────────────
+    try:
+        _run_report_user_daily_step(root, processed_dir, usage_path)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARNING] report_user_daily step failed: {exc}")
+
     return output_paths
+
+
+def _run_report_user_daily_step(
+    root: Path,
+    processed_dir: Path,
+    usage_path: Path,
+) -> None:
+    """Build and persist the report-user-day mart and quality output."""
+    fact_df = pd.read_csv(usage_path)
+
+    # Load report metadata if available (dim_report.csv)
+    report_meta_path = processed_dir / "dim_report.csv"
+    report_meta_df: pd.DataFrame | None = None
+    if report_meta_path.exists():
+        meta = pd.read_csv(report_meta_path)
+        if "report_id" in meta.columns and "report_name" in meta.columns:
+            report_meta_df = meta[["report_id", "report_name"]].drop_duplicates("report_id")
+
+    analytics_run_id = str(uuid.uuid4())
+
+    mart_df, quality_df = run_report_user_daily_pipeline(
+        fact_df=fact_df,
+        analytics_run_id=analytics_run_id,
+        as_of_date=date.today(),
+        report_meta_df=report_meta_df,
+        source_file=str(usage_path),
+    )
+
+    paths = persist_report_user_daily_outputs(mart_df, quality_df, root)
+
+    print(
+        f"report_user_daily mart: {len(mart_df):,} rows → {paths['mart']}\n"
+        f"report_user_data_quality: {len(quality_df):,} rows → {paths['quality']}"
+    )
 
 
 if __name__ == "__main__":
