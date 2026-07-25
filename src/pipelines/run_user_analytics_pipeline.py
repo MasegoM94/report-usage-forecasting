@@ -193,6 +193,29 @@ def _run_report_user_daily_step(
         print(f"Warning: user engagement metrics step failed: {_uem_exc}")
         traceback.print_exc()
 
+    # ── Step: Report engagement cohorts ────────────────────────────────────
+    try:
+        from src.analytics.user_engagement_cohorts import (
+            build_report_engagement_cohorts,
+            persist_report_engagement_cohorts,
+            CohortConfig,
+        )
+        _cohort_cfg = CohortConfig()
+        _cohort_df = build_report_engagement_cohorts(
+            sufficiency_df=_sufficiency_input,
+            mart_df=mart_df,
+            quality_df=quality_df,
+            boundaries_df=_boundaries_input,
+            cfg=_cohort_cfg,
+            analytics_run_id=analytics_run_id,
+        )
+        _cohort_path = persist_report_engagement_cohorts(_cohort_df, root)
+        print(f"  Engagement cohorts: {len(_cohort_df)} reports → {_cohort_path}")
+    except Exception as _cohort_exc:
+        import traceback
+        print(f"Warning: engagement cohorts step failed: {_cohort_exc}")
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
     run_pipeline()
