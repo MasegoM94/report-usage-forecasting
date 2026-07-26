@@ -74,6 +74,12 @@ ENGAGEMENT_CONTEXT_REQUIRED_COLS = frozenset({
     "engagement_interpretation_status",
 })
 
+METADATA_CONTEXT_REQUIRED_COLS = frozenset({
+    "analytics_run_id", "report_id", "analytics_as_of_date",
+    "metadata_completeness_score", "metadata_evidence_status",
+    "metadata_interpretation_status",
+})
+
 READINESS_OUTPUT_COLS = [
     "prerequisite_name", "file_path", "file_exists", "schema_valid",
     "grain_valid", "lineage_valid", "freshness_status", "row_count",
@@ -410,6 +416,53 @@ def validate_engagement_context_readiness(
     )
 
 
+def validate_metadata_context_readiness(
+    file_path: Path,
+    max_staleness_days: int = 30,
+) -> dict:
+    name = "metadata_context"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    reasons = []
+    present_cols = set(df.columns)
+    missing = METADATA_CONTEXT_REQUIRED_COLS - present_cols
+    schema_valid = len(missing) == 0
+    if missing:
+        reasons.append(f"missing_required_columns:{sorted(missing)}")
+
+    # Privacy: no emails
+    import re
+    email_pat = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+    for col in df.select_dtypes(include="object").columns:
+        sample = df[col].dropna().astype(str).head(5)
+        for val in sample:
+            if email_pat.search(val):
+                reasons.append(f"email_detected_in_col:{col}")
+                schema_valid = False
+                break
+
+    grain_valid = not df.duplicated(subset=["report_id"]).any()
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    lineage_valid = all(c in present_cols for c in ["analytics_run_id", "analytics_as_of_date"])
+    if not lineage_valid:
+        reasons.append("missing_lineage_fields")
+
+    freshness_status, _ = _check_freshness(df, "generated_at", max_staleness_days)
+    as_of_date = df["analytics_as_of_date"].iloc[0] if "analytics_as_of_date" in present_cols and len(df) > 0 else None
+
+    return _build_result(
+        name, file_path, df, schema_valid, grain_valid, lineage_valid,
+        freshness_status, as_of_date, reasons
+    )
+
+
 def validate_report_analytics_prerequisites(
     project_root: Path,
     max_feature_staleness_days: int = 7,
@@ -439,6 +492,9 @@ def validate_report_analytics_prerequisites(
     ))
     results.append(validate_engagement_context_readiness(
         project_root / "outputs" / "analytics" / "report_engagement_context.csv",
+    ))
+    results.append(validate_metadata_context_readiness(
+        project_root / "outputs" / "analytics" / "report_metadata_context.csv",
     ))
     return results
 
