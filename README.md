@@ -555,3 +555,77 @@ to monitoring, investigation, and data quality review.
 | `docs/data_dictionary_sprint6.md` | Column-level definitions for all 9 Sprint 6 output files |
 | `docs/user_analytics_methodology.md` | Metric formulas, cohort denominators, suppression policy |
 | `docs/deprecated_fields_sprint6.md` | Deprecated fields and their Sprint 6 replacements |
+
+---
+
+## Sprint 7 — Report Analytics and Decision Support
+
+Sprint 7 builds the report analytics layer that combines all prior sprint outputs into
+a canonical decision-support mart for report-level review and action.
+
+### What Sprint 7 builds
+
+Seven analytics layers joined into one mart:
+
+1. **Historical usage context** — 28d/90d trends, inactivity streaks, volatility, anomaly evidence
+2. **Forecast outlook** — 28d horizon direction, uncertainty status, actual vs. forecast comparison
+3. **Model health context** — backtest diagnostics, production evidence maturity, interpretation guidance
+4. **Engagement context** — breadth, repeat, lapse cohorts, frequency, concentration (privacy-gated)
+5. **Metadata context** — explicit dim_report fields only; completeness score; nothing inferred from usage
+6. **Deterministic diagnostics** — 14-step precedence, evidence-gated risk flags, review triggers
+7. **Dimensional segmentation** — 7 independent dimensions + 15-step primary segment precedence
+
+Output: `mart_report_analytics.csv` — one row per report, 305 columns.
+
+### Key design principles
+
+- **Evidence gating:** risk flags are null when evidence is insufficient — not False
+- **No inference from usage:** cadence, criticality, and business value are never inferred from view counts
+- **Deterministic precedence:** primary diagnostic and primary segment follow strict ordered rules
+- **Privacy suppression:** concentration metrics suppressed when unique_users < 5; suppressed values never treated as zero
+- **No prohibited actions:** retire_report, delete_report, automatically_retrain, change_selected_model, restrict_user, and contact_specific_user are never produced
+- **Source-derived dates:** analytics_as_of_date = max(usage_date) from source mart; never date.today()
+
+### Output files
+
+| File | Grain | Rows | Columns |
+|---|---|---|---|
+| `outputs/metrics/report_features.csv` | report_id | 30 | 78 |
+| `outputs/analytics/report_forecast_outlook.csv` | report_id | 30 | 74 |
+| `outputs/analytics/report_model_health_context.csv` | report_id | 30 | 34 |
+| `outputs/analytics/report_engagement_context.csv` | report_id | 30 | 54 |
+| `outputs/analytics/report_metadata_context.csv` | report_id | 30 | 40 |
+| `outputs/analytics/report_diagnostics.csv` | report_id | 30 | 47 |
+| `outputs/analytics/report_segments.csv` | report_id | 30 | 16 |
+| `outputs/analytics/mart_report_analytics.csv` | report_id | 30 | 305 |
+
+### Notebook
+
+```
+notebooks/08_report_analytics.ipynb
+```
+
+15 sections: Business Objective, Architecture, Historical Usage, Forecast Outlook, Model Health,
+Engagement, Metadata and Lifecycle, Diagnostics, Segmentation, Canonical Mart, Case Studies,
+Evidence and Privacy Limitations, Action Policy, Relationship to Later Sprints, Limitations.
+
+### Test coverage
+
+| Test file | Tests | Scope |
+|---|---|---|
+| `tests/test_report_analytics_notebook.py` | 30 | Notebook structure, data loading, prohibited content |
+| `tests/test_report_analytics_pipeline_integration.py` | 40+ | File existence, spine preservation, temporal alignment, privacy, prohibited actions, determinism |
+
+### GenAI (Sprint 8) and Streamlit (Sprint 9) not yet modified
+
+Sprint 7 produces CSV outputs only. `mart_report_analytics.csv` is designed as the input for
+Sprint 8 (GenAI narrative generation) and Sprint 9 (Streamlit dashboard), but neither is
+modified in this sprint.
+
+### Documentation
+
+| File | Contents |
+|------|----------|
+| `docs/data_dictionary_sprint7.md` | Column-level definitions for all 8 Sprint 7 output files |
+| `docs/report_analytics_methodology_sprint7.md` | Temporal policy, evidence gating, precedence lists, privacy suppression |
+| `docs/deprecated_fields_sprint7.md` | Deprecated fields and their Sprint 7 replacements |
