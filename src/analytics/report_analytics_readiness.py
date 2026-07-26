@@ -512,6 +512,86 @@ def validate_report_diagnostics_readiness(
                          freshness_status, as_of, reasons)
 
 
+REPORT_SEGMENTS_REQUIRED_COLS = frozenset({
+    "analytics_run_id", "report_id", "analytics_as_of_date",
+    "primary_report_segment", "segment_evidence_status",
+})
+
+MART_ANALYTICS_REQUIRED_COLS = frozenset({
+    "analytics_run_id", "report_id", "analytics_as_of_date",
+    "overall_report_status", "recommended_report_action",
+    "overall_review_priority",
+})
+
+
+def validate_segments_readiness(
+    file_path: Path,
+    max_staleness_days: int = 7,
+) -> dict:
+    name = "report_segments"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    reasons = []
+    present = set(df.columns)
+    missing = REPORT_SEGMENTS_REQUIRED_COLS - present
+    schema_valid = not missing
+    if missing:
+        reasons.append(f"missing_cols:{sorted(missing)}")
+
+    grain_valid = not df.duplicated(subset=["report_id"]).any()
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    lineage_valid = all(c in present for c in ["analytics_run_id", "analytics_as_of_date"])
+    if not lineage_valid:
+        reasons.append("missing_lineage")
+
+    freshness_status, _ = _check_freshness(df, "generated_at", max_staleness_days)
+    as_of = df["analytics_as_of_date"].iloc[0] if "analytics_as_of_date" in present and len(df) > 0 else None
+
+    return _build_result(name, file_path, df, schema_valid, grain_valid, lineage_valid,
+                         freshness_status, as_of, reasons)
+
+
+def validate_mart_analytics_readiness(
+    file_path: Path,
+    max_staleness_days: int = 7,
+) -> dict:
+    name = "mart_report_analytics"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    reasons = []
+    present = set(df.columns)
+    missing = MART_ANALYTICS_REQUIRED_COLS - present
+    schema_valid = not missing
+    if missing:
+        reasons.append(f"missing_cols:{sorted(missing)}")
+
+    grain_valid = not df.duplicated(subset=["report_id"]).any()
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    lineage_valid = all(c in present for c in ["analytics_run_id", "analytics_as_of_date"])
+    if not lineage_valid:
+        reasons.append("missing_lineage")
+
+    freshness_status, _ = _check_freshness(df, "generated_at", max_staleness_days)
+    as_of = df["analytics_as_of_date"].iloc[0] if "analytics_as_of_date" in present and len(df) > 0 else None
+
+    return _build_result(name, file_path, df, schema_valid, grain_valid, lineage_valid,
+                         freshness_status, as_of, reasons)
+
+
 def validate_report_analytics_prerequisites(
     project_root: Path,
     max_feature_staleness_days: int = 7,
@@ -547,6 +627,12 @@ def validate_report_analytics_prerequisites(
     ))
     results.append(validate_report_diagnostics_readiness(
         project_root / "outputs" / "analytics" / "report_diagnostics.csv",
+    ))
+    results.append(validate_segments_readiness(
+        project_root / "outputs" / "analytics" / "report_segments.csv",
+    ))
+    results.append(validate_mart_analytics_readiness(
+        project_root / "outputs" / "analytics" / "mart_report_analytics.csv",
     ))
     return results
 
