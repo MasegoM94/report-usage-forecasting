@@ -463,6 +463,55 @@ def validate_metadata_context_readiness(
     )
 
 
+REPORT_DIAGNOSTICS_REQUIRED_COLS = frozenset({
+    "analytics_run_id", "report_id", "analytics_as_of_date",
+    "primary_diagnostic", "overall_diagnostic_severity",
+    "recommended_diagnostic_action",
+})
+
+
+def validate_report_diagnostics_readiness(
+    file_path: Path,
+    max_staleness_days: int = 7,
+) -> dict:
+    name = "report_diagnostics"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    reasons = []
+    present = set(df.columns)
+    missing = REPORT_DIAGNOSTICS_REQUIRED_COLS - present
+    schema_valid = not missing
+    if missing:
+        reasons.append(f"missing_cols:{sorted(missing)}")
+
+    # No prohibited actions
+    if "recommended_diagnostic_action" in present:
+        from src.analytics.report_diagnostics import PROHIBITED_ACTIONS
+        bad = set(df["recommended_diagnostic_action"].dropna()) & PROHIBITED_ACTIONS
+        if bad:
+            schema_valid = False
+            reasons.append(f"prohibited_actions:{sorted(bad)}")
+
+    grain_valid = not df.duplicated(subset=["report_id"]).any()
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    lineage_valid = all(c in present for c in ["analytics_run_id", "analytics_as_of_date"])
+    if not lineage_valid:
+        reasons.append("missing_lineage")
+
+    freshness_status, _ = _check_freshness(df, "generated_at", max_staleness_days)
+    as_of = df["analytics_as_of_date"].iloc[0] if "analytics_as_of_date" in present and len(df) > 0 else None
+
+    return _build_result(name, file_path, df, schema_valid, grain_valid, lineage_valid,
+                         freshness_status, as_of, reasons)
+
+
 def validate_report_analytics_prerequisites(
     project_root: Path,
     max_feature_staleness_days: int = 7,
@@ -495,6 +544,9 @@ def validate_report_analytics_prerequisites(
     ))
     results.append(validate_metadata_context_readiness(
         project_root / "outputs" / "analytics" / "report_metadata_context.csv",
+    ))
+    results.append(validate_report_diagnostics_readiness(
+        project_root / "outputs" / "analytics" / "report_diagnostics.csv",
     ))
     return results
 
