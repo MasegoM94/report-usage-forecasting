@@ -845,3 +845,56 @@ def _build_result(
         "readiness_status": status,
         "readiness_reasons": "|".join(issues) if issues else None,
     }
+
+
+def validate_genai_insights_readiness(
+    file_path: Path,
+    max_staleness_days: int = 7,
+) -> dict:
+    """Check that the GenAI insights output is present and has the required lineage fields."""
+    import json as _json
+    name = "genai_insights"
+    if not file_path.exists():
+        return _missing_result(name, file_path)
+    try:
+        with open(file_path) as f:
+            data = _json.load(f)
+    except Exception as e:
+        return _failed_result(name, file_path, f"Cannot read: {e}")
+
+    if not data:
+        return _failed_result(name, file_path, "Empty insights file")
+
+    required = {"report_id", "prompt_version", "generation_status", "executive_summary"}
+    sample = data[0] if data else {}
+    present = set(sample.keys())
+    missing = required - present
+
+    schema_valid = len(missing) == 0
+    reasons = [f"missing_fields:{sorted(missing)}"] if missing else []
+
+    ids = [str(item.get("report_id")) for item in data]
+    grain_valid = len(ids) == len(set(ids))
+    if not grain_valid:
+        reasons.append("duplicate_report_id")
+
+    lineage_valid = all("analytics_run_id" in item for item in data[:5])
+    if not lineage_valid:
+        reasons.append("missing_analytics_run_id")
+
+    as_of_date = sample.get("analytics_as_of_date")
+    row_count = len(data)
+
+    return {
+        "prerequisite_name": name,
+        "file_path": str(file_path),
+        "readiness_status": "ready" if (schema_valid and grain_valid) else "schema_mismatch",
+        "row_count": row_count,
+        "column_count": len(present),
+        "missing_required_columns": sorted(missing),
+        "has_duplicate_grain": not grain_valid,
+        "lineage_complete": lineage_valid,
+        "freshness_status": "unknown",
+        "as_of_date": as_of_date,
+        "validation_reasons": reasons,
+    }

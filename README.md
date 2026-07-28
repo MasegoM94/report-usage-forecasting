@@ -629,3 +629,41 @@ modified in this sprint.
 | `docs/data_dictionary_sprint7.md` | Column-level definitions for all 8 Sprint 7 output files |
 | `docs/report_analytics_methodology_sprint7.md` | Temporal policy, evidence gating, precedence lists, privacy suppression |
 | `docs/deprecated_fields_sprint7.md` | Deprecated fields and their Sprint 7 replacements |
+
+## Sprint 8 — GenAI Insight Layer
+
+**Design principle:** The analytics layer calculates and decides; the GenAI layer explains.
+
+### Canonical input
+`outputs/analytics/mart_report_analytics.csv` is the sole analytics source for GenAI insights.
+Deterministic metrics, risk flags, statuses, and actions are pre-computed by the Sprint 7 pipeline.
+The LLM converts them into stakeholder-friendly language — it does not recalculate or reclassify.
+The legacy 4-CSV re-join (forecast/metrics/segments/diagnostics) is no longer used in the pipeline.
+
+### Privacy
+Privacy-suppressed values (fewer than 5 active users in a window) are passed to the LLM as `null`
+with an explicit context note. The LLM is instructed not to infer, estimate, or reconstruct them.
+
+### Structured output
+The LLM returns validated JSON with fields: `executive_summary`, `usage_insight`, `engagement_insight`,
+`forecast_insight`, `model_confidence_note`, `recommended_action`, `evidence_limitations`.
+Responses that fail schema validation or contain prohibited phrases (retire, delete, retrain) fall back
+to a deterministic rule-based summary.
+
+### Grounding validation
+Numerical percentage values in the generated text are compared against the input context.
+Unsupported numbers trigger validation warnings (not hard rejections).
+
+### Cost control
+Context hashing skips unchanged reports — no API call is made if the context and prompt version
+have not changed since the last successful run.
+
+### Output
+`outputs/insights/report_ai_insights.json` — lineage-enriched array with `analytics_run_id`,
+`genai_run_id`, `prompt_version`, `model_name`, `generated_at`, `input_hash`, `generation_status`,
+`validation_status` per insight. Backward-compatible aliases (`health_status`, `forecast_summary`,
+`recommended_actions`, `hypotheses`, `confidence`) are included for Streamlit compatibility.
+
+### Fallback
+If the API is unavailable or returns an invalid response, deterministic rule-based summaries
+are generated from the pre-computed mart fields. One report failure does not stop the batch.
