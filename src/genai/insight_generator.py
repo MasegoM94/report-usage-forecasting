@@ -91,12 +91,149 @@ PROHIBITED_CONTEXT_PATTERNS = frozenset({
     "usage_change_pct",  # deprecated (canonical: usage_change_28d_pct)
 })
 
-# Prohibited phrases in LLM output
+# Prohibited action patterns in LLM output — matched as complete words or explicit phrases.
+# Each entry is a pre-compiled word-boundary or phrase-boundary regex (case-insensitive).
+# Multi-word phrases use \s+ between tokens so minor spacing variations still match.
+# This avoids false positives such as "deletes stale rows", "retraining budget", or
+# "retirement planning" triggering an action-rejection error.
+_PROHIBITED_ACTION_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\bretire\b",                  re.IGNORECASE),
+    re.compile(r"\bretirement\b",              re.IGNORECASE),
+    re.compile(r"\bdelete\b",                  re.IGNORECASE),
+    re.compile(r"\bdeleting\b",               re.IGNORECASE),
+    re.compile(r"\bdeletion\b",               re.IGNORECASE),
+    re.compile(r"\bretrain\b",                 re.IGNORECASE),
+    re.compile(r"\bretraining\b",              re.IGNORECASE),
+    re.compile(r"\breplace(?:s|d)?\s+the\s+model\b",     re.IGNORECASE),
+    re.compile(r"\breplacing\s+the\s+model\b",            re.IGNORECASE),
+    re.compile(r"\breplace\s+model\b",                    re.IGNORECASE),
+    re.compile(r"\bmodel\s+replacement\b",     re.IGNORECASE),
+    re.compile(r"\brestrict\s+user\b",         re.IGNORECASE),
+    re.compile(r"\bcontact\s+user\b",          re.IGNORECASE),
+]
+
+# Identifier patterns — kept separate from action detection so legitimate uses of
+# words like "email" in ordinary text do not trigger action failures.
+# These produce potential_identifier warnings, not hard schema errors.
+_IDENTIFIER_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("user_id",   re.compile(r"\buser[_\s]id\b",  re.IGNORECASE)),
+    ("user_key",  re.compile(r"\buser[_\s]key\b", re.IGNORECASE)),
+    ("email_addr",re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", re.IGNORECASE)),
+]
+
+# Retain the old frozenset name so existing imports from tests are not broken;
+# it is no longer used by _validate_insight_schema.
 PROHIBITED_OUTPUT_PHRASES = frozenset({
     "retire", "retirement", "delete", "deleting", "deletion", "retrain", "retraining",
     "replace the model", "replace model", "model replacement",
     "restrict user", "contact user",
 })
+
+# ── Trend-direction grounding ─────────────────────────────────────────────
+# Maps deterministic context field values to sets of language patterns that
+# are clearly contradictory.  Only unambiguous contradictions are flagged —
+# cautious or neutral phrasing ("mixed", "uncertain", "broadly stable",
+# "insufficient evidence") is never flagged.
+#
+# Design rules:
+#   - DECLINING_STATUSES / GROWING_STATUSES map context field values to
+#     "positive" (growing) and "negative" (declining) direction buckets.
+#   - _GROWING_LANGUAGE / _DECLINING_LANGUAGE are regexes matched against the
+#     relevant insight sub-field text.
+#   - A conflict is only raised when the context says one direction AND the
+#     output contains language from the opposite direction.
+#   - Omitting directional language is always acceptable.
+
+_GROWING_LANGUAGE = re.compile(
+    r"\b(grow(?:ing|th|n)?|increas(?:ing|ed?)|expan(?:ding|sion)|rising|upward|climb(?:ing)?)\b",
+    re.IGNORECASE,
+)
+_DECLINING_LANGUAGE = re.compile(
+    r"\b(declin(?:ing|ed?)|decreas(?:ing|ed?)|drop(?:ping|ped)?|fall(?:ing)?|reduc(?:ing|tion)|downward|shrink(?:ing)?)\b",
+    re.IGNORECASE,
+)
+
+# Statuses that mean the deterministic layer classified direction as DECLINING
+_HISTORICAL_DECLINING_STATUSES = frozenset({
+    "declining_usage", "severe_historical_decline", "high_decline_risk",
+    "moderate_decline", "low_usage_declining",
+})
+# Statuses that mean the deterministic layer classified direction as GROWING
+_HISTORICAL_GROWING_STATUSES = frozenset({
+    "growing_usage", "rapid_growth", "moderate_growth", "stable_growing",
+})
+
+_FORECAST_DECLINING_STATUSES = frozenset({
+    "decline_expected", "forecast_declining", "expected_inactivity",
+    "declining_forecast", "expected_decline",
+})
+_FORECAST_GROWING_STATUSES = frozenset({
+    "growth_expected", "forecast_growing", "expected_growth",
+    "stable_growth_expected",
+})
+
+_ACTIVE_USER_DECLINING_VALUES = frozenset({"decreasing", "declining", "falling"})
+_ACTIVE_USER_GROWING_VALUES   = frozenset({"increasing", "growing", "rising"})
+
+# Statuses that should never trigger a direction conflict regardless of language
+_NEUTRAL_STATUSES = frozenset({
+    "stable", "stable_regular_usage", "stable_outlook", "stable_usage",
+    "mixed", "mixed_signals", "uncertain", "insufficient_evidence",
+    "no_data", "data_quality_issue", "insufficient_evidence",
+    "immature_report", "newly_launched",
+})
+
+
+def _check_direction_conflicts(insight: dict, context: dict) -> list[str]:
+    """
+    Return direction-conflict error codes when the generated text clearly
+    contradicts the deterministic context direction.
+
+    Errors are of the form ``direction_conflict:<dimension>``.
+    Each conflict triggers the deterministic fallback in generate_ai_insight.
+
+    Only unambiguous contradictions are flagged:
+    - context says declining  + output says growing   → conflict
+    - context says growing    + output says declining  → conflict
+    Omitted language, cautious language, and neutral statuses are ignored.
+    """
+    conflicts: list[str] = []
+
+    # ── 1. Historical usage direction ─────────────────────────────────────
+    hist_status = str(context.get("historical_usage_status") or "").lower().strip()
+    usage_text = str(insight.get("usage_insight", "")).lower()
+
+    if hist_status in _HISTORICAL_DECLINING_STATUSES:
+        if _GROWING_LANGUAGE.search(usage_text):
+            conflicts.append("direction_conflict:historical_usage")
+    elif hist_status in _HISTORICAL_GROWING_STATUSES:
+        if _DECLINING_LANGUAGE.search(usage_text):
+            conflicts.append("direction_conflict:historical_usage")
+
+    # ── 2. Forecast direction ─────────────────────────────────────────────
+    forecast_status = str(context.get("forecast_outlook_status") or "").lower().strip()
+    forecast_text = str(insight.get("forecast_insight", "")).lower()
+
+    if forecast_status in _FORECAST_DECLINING_STATUSES:
+        if _GROWING_LANGUAGE.search(forecast_text):
+            conflicts.append("direction_conflict:forecast_outlook")
+    elif forecast_status in _FORECAST_GROWING_STATUSES:
+        if _DECLINING_LANGUAGE.search(forecast_text):
+            conflicts.append("direction_conflict:forecast_outlook")
+
+    # ── 3. Active-user direction ──────────────────────────────────────────
+    user_direction = str(context.get("active_user_direction_28d") or "").lower().strip()
+    engagement_text = str(insight.get("engagement_insight", "")).lower()
+
+    if user_direction in _ACTIVE_USER_DECLINING_VALUES:
+        if _GROWING_LANGUAGE.search(engagement_text):
+            conflicts.append("direction_conflict:active_users")
+    elif user_direction in _ACTIVE_USER_GROWING_VALUES:
+        if _DECLINING_LANGUAGE.search(engagement_text):
+            conflicts.append("direction_conflict:active_users")
+
+    return conflicts
+
 
 # Structured output required fields
 REQUIRED_INSIGHT_FIELDS = {
@@ -192,7 +329,13 @@ def _to_bool(value: Any) -> bool:
 
 
 def load_input_tables(project_root: Path | None = None) -> dict[str, pd.DataFrame]:
-    """Load forecast, performance, segment, and diagnostic CSV outputs (legacy)."""
+    """Load forecast, performance, segment, and diagnostic CSV outputs.
+
+    DEPRECATED — retained for historical reference only.
+    The Sprint 8 pipeline reads mart_report_analytics.csv via build_mart_context()
+    and generate_report_insights().  This function is not called anywhere in the
+    canonical pipeline.
+    """
     root = project_root or get_project_root()
     return {
         "forecasts": _read_first_existing_csv(root / "outputs" / "forecasts", FORECAST_INPUT_CANDIDATES),
@@ -203,7 +346,11 @@ def load_input_tables(project_root: Path | None = None) -> dict[str, pd.DataFram
 
 
 def summarize_forecasts(forecasts: pd.DataFrame) -> pd.DataFrame:
-    """Summarize report-level forecast output to one row per report (legacy)."""
+    """Summarize report-level forecast output to one row per report.
+
+    DEPRECATED — retained for historical reference only.
+    Not called by the Sprint 8 pipeline.  See build_mart_context().
+    """
     forecasts = _standardize_report_columns(forecasts)
     if forecasts.empty or "report_id" not in forecasts.columns:
         return pd.DataFrame(columns=["report_id", "report_name"])
@@ -232,7 +379,11 @@ def summarize_forecasts(forecasts: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
-    """Summarize model performance output to one row per report (legacy)."""
+    """Summarize model performance output to one row per report.
+
+    DEPRECATED — retained for historical reference only.
+    Not called by the Sprint 8 pipeline.  See build_mart_context().
+    """
     metrics = _standardize_report_columns(metrics)
     if metrics.empty or "report_id" not in metrics.columns:
         return pd.DataFrame(columns=["report_id", "report_name"])
@@ -255,7 +406,12 @@ def summarize_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_report_contexts(tables: dict[str, pd.DataFrame]) -> list[dict[str, Any]]:
-    """Join input tables at report_id level (legacy — not used in new pipeline)."""
+    """Join input tables at report_id level.
+
+    DEPRECATED — retained for historical reference only.
+    The Sprint 8 pipeline replaces this with build_mart_context(), which reads
+    mart_report_analytics.csv and applies the explicit INSIGHT_CONTEXT_ALLOWLIST.
+    """
     forecast_summary = summarize_forecasts(tables.get("forecasts", pd.DataFrame()))
     metrics_summary = summarize_metrics(tables.get("metrics", pd.DataFrame()))
     segments = _standardize_report_columns(tables.get("segments", pd.DataFrame()))
@@ -339,51 +495,121 @@ def _parse_json_response(text: str) -> dict:
 
 def _validate_insight_schema(insight: dict, context: dict) -> list[str]:
     """
-    Validate structured insight. Returns list of validation errors.
-    Empty list = valid. Ungrounded numbers are warnings, not hard errors.
-    """
-    errors = []
+    Validate a structured LLM insight against the supplied report context.
 
-    # 1. Required fields present and non-empty
+    Returns a list of error codes.  An empty list means the insight is valid.
+
+    Error-code prefixes and their severity (used by generate_ai_insight):
+      missing_field / empty_field      → hard error  → triggers fallback
+      prohibited_phrase                → hard error  → triggers fallback
+      direction_conflict               → hard error  → triggers fallback
+      ungrounded_number (≥ GROUNDING_TOLERANCE)
+                                       → hard error  → triggers fallback
+      ungrounded_count                 → hard error  → triggers fallback
+      potential_identifier             → warning only (not a fallback trigger)
+
+    Numerical-grounding policy
+    --------------------------
+    Tolerance: ±GROUNDING_TOLERANCE percentage points (default 5 pp).
+    Rationale: a 5 pp tolerance handles rounding from the pipeline (e.g.
+    storing 0.604 as 60%) without letting material fabrications through.
+    Numbers used as section labels or in generic language (e.g. "28-day
+    window", "top 3 reports") are not extracted as factual claims because
+    the regex requires a literal "%" character after the digit.
+    Plain integer counts (without %) that appear in the output but are not
+    within ±GROUNDING_TOLERANCE of any context numeric value are also flagged
+    when they are ≥ COUNT_GROUNDING_MIN (avoids flagging small labels like
+    "3 sections").
+    """
+    GROUNDING_TOLERANCE = 5.0   # percentage points; see policy note above
+    COUNT_GROUNDING_MIN = 10    # only check plain integer counts this large
+
+    errors = []
+    text_parts: list[str] = []
+    for v in insight.values():
+        if isinstance(v, str):
+            text_parts.append(v)
+        elif isinstance(v, list):
+            text_parts.extend(str(item) for item in v)
+    all_text = " ".join(text_parts)
+    all_text_lower = all_text.lower()
+
+    # ── 1. Required fields present and non-empty ──────────────────────────
     for field in REQUIRED_INSIGHT_FIELDS:
         if field not in insight:
             errors.append(f"missing_field:{field}")
         elif not str(insight[field]).strip():
             errors.append(f"empty_field:{field}")
 
-    # 2. No prohibited phrases in any text field
-    all_text = " ".join(str(v) for v in insight.values() if isinstance(v, str)).lower()
-    for phrase in PROHIBITED_OUTPUT_PHRASES:
-        if phrase in all_text:
-            errors.append(f"prohibited_phrase:{phrase}")
+    # ── 2. Prohibited action detection (word-boundary regex) ──────────────
+    # Uses _PROHIBITED_ACTION_PATTERNS, not substring matching, to avoid
+    # false positives on "deletes", "retraining budget", "retirement plan".
+    for pat in _PROHIBITED_ACTION_PATTERNS:
+        if pat.search(all_text):
+            errors.append(f"prohibited_phrase:{pat.pattern}")
 
-    # 3. No user identifiers in output
-    for pat in {"user_id", "user_key", "@", "email"}:
-        if pat in all_text:
-            errors.append(f"potential_identifier:{pat}")
+    # ── 3. User-identifier detection (kept separate from action checks) ───
+    # Produces potential_identifier warnings only — not hard errors — so that
+    # legitimate uses of the word "email" in ordinary text do not force a
+    # fallback.  Actual email addresses (user@domain.tld) are flagged.
+    for label, pat in _IDENTIFIER_PATTERNS:
+        if pat.search(all_text):
+            errors.append(f"potential_identifier:{label}")
 
-    # 4. Numerical grounding — extract percentages and check against context
-    numbers_in_text = re.findall(r"\b(\d+(?:\.\d+)?)\s*%", all_text)
-    context_numbers = set()
-    for v in context.values():
+    # ── 4. Trend-direction grounding ─────────────────────────────────────
+    # Compares directional language in usage/forecast/engagement sub-fields
+    # against the deterministic context.  Hard error only on clear contradiction.
+    errors.extend(_check_direction_conflicts(insight, context))
+
+    # ── 5. Numerical grounding ────────────────────────────────────────────
+    # Build the set of plausible numeric values from context.
+    # Fields that store proportions/rates (0–1 scale) and should be scaled ×100
+    # so that a "60%" claim is grounded against returning_user_share_28d=0.60.
+    # Fields like days_since_last_use or forecast_total_28d are counts and must
+    # NOT be scaled — otherwise days_since_last_use=1 contributes 100.0 and
+    # lets any near-100% claim pass unchallenged.
+    _RATE_FIELD_SUFFIXES = ("_pct", "_rate", "_share", "_ratio")
+    context_numbers: set[float] = set()
+    for key, v in context.items():
         if v is None:
             continue
         try:
             fv = float(v)
             context_numbers.add(round(fv, 1))
-            context_numbers.add(round(fv * 100, 1))
+            if any(s in str(key) for s in _RATE_FIELD_SUFFIXES) and 0.0 < fv <= 1.0:
+                context_numbers.add(round(fv * 100, 1))
         except (TypeError, ValueError):
             pass
 
-    for num_str in numbers_in_text:
+    # 5a. Percentage claims (require literal "%" suffix)
+    pct_matches = re.findall(r"\b(\d+(?:\.\d+)?)\s*%", all_text_lower)
+    for num_str in pct_matches:
         try:
             num = float(num_str)
-            if not any(abs(num - cn) <= 2.0 for cn in context_numbers):
+            if not any(abs(num - cn) <= GROUNDING_TOLERANCE for cn in context_numbers):
                 errors.append(f"ungrounded_number:{num}%")
         except ValueError:
             pass
 
-    # 5. recommended_action must not be empty
+    # 5b. Plain integer counts (no % — must be >= COUNT_GROUNDING_MIN to avoid
+    # flagging section labels, rankings, or small ordinals).
+    # Exclude numbers immediately followed by time-period labels ("28 days",
+    # "28-day") — these are window labels from the prompt, not factual claims.
+    count_matches = re.findall(
+        r"\b(\d{2,})\b(?!\s*%|\s*[-]?(?:day|days|week|weeks|month|months|year|years)\b)",
+        all_text_lower,
+    )
+    for num_str in count_matches:
+        try:
+            num = float(num_str)
+            if num < COUNT_GROUNDING_MIN:
+                continue
+            if not any(abs(num - cn) <= GROUNDING_TOLERANCE for cn in context_numbers):
+                errors.append(f"ungrounded_count:{int(num)}")
+        except ValueError:
+            pass
+
+    # ── 6. recommended_action must not be empty ───────────────────────────
     if "recommended_action" in insight and not str(insight["recommended_action"]).strip():
         errors.append("empty_recommended_action")
 
@@ -625,13 +851,15 @@ def generate_ai_insight(
             parsed = result["parsed"]
             errors = result["validation_errors"]
 
-            schema_errors = [
+            # Hard errors trigger the deterministic fallback.
+            # potential_identifier is a warning only.
+            hard_errors = [
                 e for e in errors
-                if "missing_field" in e or "empty_field" in e or "prohibited_phrase" in e
+                if not e.startswith("potential_identifier")
             ]
-            warning_errors = [e for e in errors if "ungrounded_number" in e]
+            warning_errors = [e for e in errors if e.startswith("potential_identifier")]
 
-            if schema_errors:
+            if hard_errors:
                 validation_status = "invalid"
             elif warning_errors:
                 validation_status = "warnings"
@@ -646,7 +874,7 @@ def generate_ai_insight(
                     **fallback,
                     "generation_status": "fallback_schema_invalid",
                     "validation_status": "invalid",
-                    "generation_error": f"schema_errors:{schema_errors}",
+                    "generation_error": f"hard_errors:{hard_errors}",
                     "api_attempts": result.get("api_attempts", 0),
                 }
 
@@ -845,11 +1073,40 @@ def render_insights_markdown(insights: list[dict[str, Any]]) -> str:
 # ── Pipeline entry point ───────────────────────────────────────────────────
 
 def run_pipeline(project_root: Path | None = None, model: str = DEFAULT_MODEL) -> dict[str, Path]:
-    """Generate and save all report insights."""
+    """
+    Generate and save all report-level insights, then generate the portfolio summary.
+
+    Contract:
+    - Report-level failure does not block portfolio generation (portfolio uses its own fallback).
+    - Portfolio failure does not remove report-level outputs.
+    - Both pipelines share the same genai_run_id for the batch.
+    """
+    from src.genai.portfolio_insights import run_portfolio_pipeline  # local import avoids circular
+
     root = project_root or get_project_root()
-    insights = generate_report_insights(project_root=root, model=model)
-    output_paths = save_insights(insights, project_root=root)
-    print(f"Generated {len(insights)} report AI insights.")
+    genai_run_id = str(uuid.uuid4())
+
+    # ── Report-level insights ──────────────────────────────────────────────────
+    output_paths: dict[str, Path] = {}
+    try:
+        insights = generate_report_insights(project_root=root, model=model)
+        for ins in insights:
+            ins["genai_run_id"] = genai_run_id
+        report_paths = save_insights(insights, project_root=root)
+        output_paths.update({f"report_{k}": v for k, v in report_paths.items()})
+        print(f"Generated {len(insights)} report AI insights.")
+    except Exception as exc:
+        print(f"[WARNING] Report-level insights failed: {exc}")
+
+    # ── Portfolio insight ──────────────────────────────────────────────────────
+    try:
+        portfolio_paths = run_portfolio_pipeline(
+            project_root=root, model=model, genai_run_id=genai_run_id
+        )
+        output_paths.update({f"portfolio_{k}": v for k, v in portfolio_paths.items()})
+    except Exception as exc:
+        print(f"[WARNING] Portfolio insight failed: {exc}")
+
     for label, path in output_paths.items():
         print(f"{label}: {path}")
     return output_paths

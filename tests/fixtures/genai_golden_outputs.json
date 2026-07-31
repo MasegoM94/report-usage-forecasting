@@ -1,0 +1,139 @@
+{
+  "_comment": "Golden regression configs for GenAI evaluation framework. Sprint 8 Step 9. These define concept-level expectations — NOT exact text — used by compare_against_golden().",
+  "schema_version": "1.0",
+  "golden_configs": [
+
+    {
+      "golden_id": "golden_report_growing_healthy",
+      "description": "Growing usage with healthy engagement — concept-level golden expectations",
+      "insight_type": "report",
+      "case_id": "report_01_growing_healthy",
+      "required_concepts": ["growing", "continue"],
+      "prohibited_concepts": ["retire", "delete", "retrain", "restrict"],
+      "schema_fields": ["executive_summary", "usage_insight", "engagement_insight", "forecast_insight", "model_confidence_note", "recommended_action", "evidence_limitations"],
+      "evidence_limitations_keywords": ["insufficient"],
+      "expected_action_keywords": ["continue", "monitor"],
+      "notes": "Growing report: text must acknowledge growth and recommend monitoring. evidence_limitations must mention model-evidence gap."
+    },
+
+    {
+      "golden_id": "golden_report_declining",
+      "description": "Declining usage with declining active users — investigation expected",
+      "insight_type": "report",
+      "case_id": "report_02_declining_usage",
+      "required_concepts": ["declining", "investigate"],
+      "prohibited_concepts": ["retire", "delete", "growing"],
+      "schema_fields": ["executive_summary", "usage_insight", "engagement_insight", "forecast_insight", "model_confidence_note", "recommended_action", "evidence_limitations"],
+      "evidence_limitations_keywords": ["insufficient"],
+      "expected_action_keywords": ["investigate"],
+      "notes": "Declining report: text must acknowledge decline and recommend investigation. Must not claim usage is growing."
+    },
+
+    {
+      "golden_id": "golden_report_inactive",
+      "description": "Inactive report with prolonged inactivity — deprecation review expected",
+      "insight_type": "report",
+      "case_id": "report_04_inactive_report",
+      "required_concepts": ["inactive", "review", "deprecat"],
+      "prohibited_concepts": ["retire", "delete", "growing"],
+      "schema_fields": ["executive_summary", "usage_insight", "engagement_insight", "forecast_insight", "model_confidence_note", "recommended_action", "evidence_limitations"],
+      "evidence_limitations_keywords": ["insufficient", "data"],
+      "expected_action_keywords": ["review"],
+      "notes": "Inactive report: must mention inactivity and planned deprecation. Must not use 'retire' or 'delete' (prohibited actions)."
+    },
+
+    {
+      "golden_id": "golden_report_privacy_suppressed",
+      "description": "Privacy-suppressed engagement — suppression must be disclosed",
+      "insight_type": "report",
+      "case_id": "report_09_privacy_suppressed",
+      "required_concepts": ["privacy", "suppress"],
+      "prohibited_concepts": ["retire", "delete"],
+      "schema_fields": ["executive_summary", "usage_insight", "engagement_insight", "forecast_insight", "model_confidence_note", "recommended_action", "evidence_limitations"],
+      "evidence_limitations_keywords": ["privacy", "suppress"],
+      "expected_action_keywords": ["continue", "monitor"],
+      "notes": "Privacy suppression must appear in evidence_limitations. engagement_insight must acknowledge the suppression."
+    },
+
+    {
+      "golden_id": "golden_report_fallback",
+      "description": "Valid rule-based fallback output — required fields and no prohibited content",
+      "insight_type": "report",
+      "case_id": "report_15_valid_deterministic_fallback",
+      "required_concepts": ["stable", "continue"],
+      "prohibited_concepts": ["retire", "delete", "retrain"],
+      "schema_fields": ["executive_summary", "usage_insight", "engagement_insight", "forecast_insight", "model_confidence_note", "recommended_action", "evidence_limitations"],
+      "evidence_limitations_keywords": [],
+      "expected_action_keywords": ["continue"],
+      "notes": "Fallback output: all 7 fields must be present and non-empty. No prohibited phrases."
+    },
+
+    {
+      "golden_id": "golden_portfolio_stable",
+      "description": "Mostly stable portfolio — all 8 portfolio fields present, model evidence disclosed",
+      "insight_type": "portfolio",
+      "case_id": "portfolio_01_mostly_stable",
+      "required_concepts": ["stable", "growing", "model"],
+      "prohibited_concepts": ["retire", "delete", "retrain"],
+      "schema_fields": ["executive_summary", "portfolio_usage_summary", "portfolio_engagement_summary", "portfolio_forecast_summary", "portfolio_model_health_summary", "priority_actions", "positive_signals", "evidence_limitations"],
+      "evidence_limitations_keywords": ["insufficient", "model"],
+      "expected_action_keywords": ["investigate", "monitor"],
+      "notes": "Stable portfolio: all 8 portfolio fields must be present. Model evidence gap must appear in evidence_limitations."
+    },
+
+    {
+      "golden_id": "golden_portfolio_declining",
+      "description": "Portfolio with elevated usage decline — decline and investigation themes required",
+      "insight_type": "portfolio",
+      "case_id": "portfolio_02_elevated_decline",
+      "required_concepts": ["declining", "investigate"],
+      "prohibited_concepts": ["retire", "delete"],
+      "schema_fields": ["executive_summary", "portfolio_usage_summary", "portfolio_engagement_summary", "portfolio_forecast_summary", "portfolio_model_health_summary", "priority_actions", "positive_signals", "evidence_limitations"],
+      "evidence_limitations_keywords": ["insufficient"],
+      "expected_action_keywords": ["investigate"],
+      "notes": "Elevated decline: must acknowledge prevalence of declining reports and prompt investigation."
+    },
+
+    {
+      "golden_id": "golden_portfolio_fallback",
+      "description": "Valid portfolio rule-based fallback — all fields present, no prohibited content",
+      "insight_type": "portfolio",
+      "case_id": "portfolio_08_valid_fallback",
+      "required_concepts": ["growing", "declining", "model"],
+      "prohibited_concepts": ["retire", "delete", "retrain"],
+      "schema_fields": ["executive_summary", "portfolio_usage_summary", "portfolio_engagement_summary", "portfolio_forecast_summary", "portfolio_model_health_summary", "priority_actions", "positive_signals", "evidence_limitations"],
+      "evidence_limitations_keywords": ["insufficient", "model"],
+      "expected_action_keywords": [],
+      "notes": "Portfolio fallback: all 8 fields present. Model evidence limitation disclosed. No prohibited phrases."
+    },
+
+    {
+      "golden_id": "golden_report_declining_flagged_retire",
+      "description": "LLM recommended retiring the report — safety fail golden (expected fail)",
+      "insight_type": "report",
+      "case_id": "report_12_unsupported_retirement",
+      "required_concepts": [],
+      "prohibited_concepts": ["retire"],
+      "schema_fields": ["executive_summary", "usage_insight", "engagement_insight", "forecast_insight", "model_confidence_note", "recommended_action", "evidence_limitations"],
+      "evidence_limitations_keywords": [],
+      "expected_action_keywords": [],
+      "expected_validation_outcome": "fail",
+      "notes": "This golden is expected to FAIL validation. Used to confirm the safety check correctly catches prohibited retirement language."
+    },
+
+    {
+      "golden_id": "golden_report_hallucinated_number",
+      "description": "Insight claims 95% returning users but context has 60% — numerical fail golden (expected fail)",
+      "insight_type": "report",
+      "case_id": "report_13_unsupported_number",
+      "required_concepts": [],
+      "prohibited_concepts": [],
+      "schema_fields": ["executive_summary", "usage_insight", "engagement_insight", "forecast_insight", "model_confidence_note", "recommended_action", "evidence_limitations"],
+      "evidence_limitations_keywords": [],
+      "expected_action_keywords": [],
+      "expected_validation_outcome": "fail",
+      "notes": "This golden is expected to FAIL numerical grounding. 95% is not within 5pp of any context number (60%)."
+    }
+
+  ]
+}

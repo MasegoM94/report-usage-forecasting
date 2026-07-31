@@ -263,8 +263,10 @@ The scripts perform the same core workflow as the notebooks:
   and `outputs/diagnostics/`.
 - `run_user_analytics_pipeline.py` writes user engagement features and user segments to
   `outputs/metrics/` and `outputs/segments/`.
-- `insight_generator.py` reads the latest report forecast, metric, segment, and diagnostic CSVs
-  and writes structured insights to `outputs/insights/`.
+- `insight_generator.py` reads `outputs/analytics/mart_report_analytics.csv` as its sole
+  analytics input and writes structured, lineage-enriched insights to
+  `outputs/insights/report_ai_insights.json`. `portfolio_insights.py` reads the same mart
+  and writes the portfolio-level insight to `outputs/insights/portfolio_ai_insight.json`.
 
 ## Current Outputs
 
@@ -272,7 +274,8 @@ The scripts perform the same core workflow as the notebooks:
 - `outputs/metrics/` stores model performance and comparison outputs.
 - `outputs/segments/` stores report and user segmentation outputs.
 - `outputs/diagnostics/` stores diagnostic rule outputs.
-- `outputs/insights/` stores GenAI-generated insight outputs.
+- `outputs/insights/` stores GenAI-generated insight outputs (report-level and portfolio-level).
+- `outputs/evaluation/` stores GenAI evaluation results and regression summaries.
 - `outputs/validation/` stores validation and reconciliation outputs.
 
 ## Sprint 5: Model Diagnostics
@@ -633,37 +636,186 @@ modified in this sprint.
 ## Sprint 8 — GenAI Insight Layer
 
 **Design principle:** The analytics layer calculates and decides; the GenAI layer explains.
+This applies at both report level and portfolio level.
 
 ### Canonical input
-`outputs/analytics/mart_report_analytics.csv` is the sole analytics source for GenAI insights.
-Deterministic metrics, risk flags, statuses, and actions are pre-computed by the Sprint 7 pipeline.
-The LLM converts them into stakeholder-friendly language — it does not recalculate or reclassify.
-The legacy 4-CSV re-join (forecast/metrics/segments/diagnostics) is no longer used in the pipeline.
+`outputs/analytics/mart_report_analytics.csv` is the sole analytics source for all GenAI insights
+(report-level and portfolio-level). Deterministic metrics, risk flags, statuses, and actions are
+pre-computed by the Sprint 7 pipeline. The LLM converts them into stakeholder-friendly language —
+it does not recalculate or reclassify. The legacy 4-CSV re-join is no longer used.
 
-### Privacy
-Privacy-suppressed values (fewer than 5 active users in a window) are passed to the LLM as `null`
-with an explicit context note. The LLM is instructed not to infer, estimate, or reconstruct them.
+---
 
-### Structured output
-The LLM returns validated JSON with fields: `executive_summary`, `usage_insight`, `engagement_insight`,
+### Report-level insight flow (`src/genai/insight_generator.py`)
+
+One structured insight is generated per report from the 34-field allowlist context.
+
+**Context:** `build_mart_context()` extracts `INSIGHT_CONTEXT_ALLOWLIST` fields per row.
+Privacy-suppressed values are passed as `null` with an explicit context note.
+
+**Prompt:** `REPORT_INSIGHT_PROMPT_VERSION = "report_insight_v1"`.
+The LLM returns validated JSON: `executive_summary`, `usage_insight`, `engagement_insight`,
 `forecast_insight`, `model_confidence_note`, `recommended_action`, `evidence_limitations`.
-Responses that fail schema validation or contain prohibited phrases (retire, delete, retrain) fall back
-to a deterministic rule-based summary.
 
-### Grounding validation
-Numerical percentage values in the generated text are compared against the input context.
-Unsupported numbers trigger validation warnings (not hard rejections).
+**LLM responsibility:** restate deterministic statuses and actions in clear natural language.
 
-### Cost control
-Context hashing skips unchanged reports — no API call is made if the context and prompt version
-have not changed since the last successful run.
+**Deterministic responsibility:** calculate all metrics, choose the recommended action, assign
+review priority, classify status. The LLM receives the completed result, not raw data.
 
-### Output
-`outputs/insights/report_ai_insights.json` — lineage-enriched array with `analytics_run_id`,
-`genai_run_id`, `prompt_version`, `model_name`, `generated_at`, `input_hash`, `generation_status`,
-`validation_status` per insight. Backward-compatible aliases (`health_status`, `forecast_summary`,
-`recommended_actions`, `hypotheses`, `confidence`) are included for Streamlit compatibility.
+**Canonical output:** `outputs/insights/report_ai_insights.json` (array, one entry per report).
+Optional human-readable: `outputs/insights/report_ai_insights.md`.
 
-### Fallback
-If the API is unavailable or returns an invalid response, deterministic rule-based summaries
-are generated from the pre-computed mart fields. One report failure does not stop the batch.
+---
+
+### Portfolio-level insight flow (`src/genai/portfolio_insights.py`)
+
+One structured management summary is generated for the portfolio as a whole.
+
+**Aggregates computed deterministically** before any LLM call:
+- Portfolio size and evidence completeness
+- Historical usage distribution (growing / stable / declining / inactive)
+- Forecast outlook distribution and uncertainty levels
+- Model health coverage and common issues
+- Engagement health (active-user breadth, lapse, retention, dependency)
+- Decision support (status, review priority, recommended actions by count)
+- Top risks and positive signals (deterministic summary strings)
+- Attention shortlist (up to 5 reports with non-monitoring actions, ranked by priority then status)
+
+**Context:** a structured dict of portfolio-level aggregates — no user-level data, no individual
+report narratives, no suppressed-field reconstruction. Individual report names appear only in the
+deterministic attention shortlist.
+
+**Prompt:** `PORTFOLIO_INSIGHT_PROMPT_VERSION = "portfolio_insight_v1"`.
+The LLM returns validated JSON: `executive_summary`, `portfolio_usage_summary`,
+`portfolio_engagement_summary`, `portfolio_forecast_summary`, `portfolio_model_health_summary`,
+`priority_actions`, `positive_signals`, `evidence_limitations`.
+
+**LLM responsibility:** synthesise aggregate evidence into a management narrative. The LLM may
+not rank reports, invent causes, name individual users, or recommend automated actions.
+
+**Deterministic responsibility:** calculate every aggregate count and share, build the attention
+shortlist, produce the top-risk and positive-signal strings, assign the deterministic fallback.
+
+**Canonical output:** `outputs/insights/portfolio_ai_insight.json` (single dict).
+Optional human-readable: `outputs/insights/portfolio_ai_insight.md`.
+
+---
+
+### Validation and fallback (both levels)
+
+| Check | Report-level | Portfolio-level |
+|---|---|---|
+| Required schema fields | yes — 7 fields | yes — 8 fields |
+| Prohibited action phrases | yes (retire, delete, retrain, replace model) | yes (same patterns) |
+| User-identifier detection | warning only | warning only |
+| Numerical grounding | ±5 pp / ±5 count tolerance | ±5 pp / ±5 count tolerance |
+| Direction conflict | yes (usage/forecast/engagement) | — |
+| Action category allowlist | — | yes (priority_actions mapped to mart values) |
+| Evidence limitations required | — | yes when model health is insufficient |
+
+A clear contradiction or unsupported material number invalidates the LLM response.
+Both levels fall back to a deterministic rule-based summary in that case, or when the API
+is unavailable or returns invalid JSON. One report failure does not block portfolio generation.
+Portfolio failure does not remove report-level outputs.
+
+### Hash reuse (both levels)
+
+A SHA-256 hash of the sorted context + prompt version + model name is computed before each
+generation. If the hash matches a previous successful output, the output is reused with no API call.
+Failed or invalid prior outputs are never reused. A changed aggregate, prompt version, or model
+triggers regeneration.
+
+### Lineage fields (portfolio)
+
+`analytics_run_id`, `analytics_as_of_date`, `genai_run_id`, `generated_at`,
+`prompt_version`, `model_name`, `input_hash`, `generation_status`, `validation_status`,
+`generation_error`, `report_count`.
+
+### Privacy (both levels)
+
+No user-level data, no individual user identifiers, no event-level records enter any LLM context.
+The portfolio context contains only aggregated counts, shares, and status distributions.
+
+### Current limitations
+
+- Model diagnostic evidence is `insufficient_evidence` for all reports in the current synthetic
+  dataset (production backtests have not been run). Portfolio model-health commentary is therefore
+  limited to acknowledging this gap.
+- Streamlit has not been modified to display portfolio insights (future sprint).
+
+---
+
+### GenAI Evaluation Framework (`src/genai/evaluation.py`)
+
+**Design principle:** Forecast metrics evaluate the analytical model; groundedness and usefulness
+evaluate the GenAI layer. These are separate concerns.
+
+No LLM-as-judge. All automated evaluation checks are deterministic regex/value matching.
+
+#### Evaluation dimensions
+
+| Dimension | Type | Description |
+|-----------|------|-------------|
+| Completeness | Hard | All required schema fields present and non-empty |
+| Safety | Hard | No prohibited action phrases (retire, delete, retrain, replace model) |
+| Groundedness | Hard | Directional language AND numerical claims match context |
+| Direction | Hard | Usage/forecast language matches `historical_usage_status` / `forecast_outlook_status` |
+| Numerical | Hard | % and count claims within ±5 pp / ±5 of context values |
+| Action alignment | Hard | Generated action aligns with deterministic `recommended_report_action` |
+| Evidence disclosure | Hard | Model insufficiency, privacy suppression, forecast uncertainty disclosed when present |
+| Readability | Soft (0–1) | Heuristic field-length and generic-phrase check; threshold ≥ 0.5 for overall pass |
+| Conciseness | Soft (0–1) | Average word-count ratio vs. per-field limits; informational only |
+
+**Overall pass rule:** all 7 hard dimensions True AND readability_score ≥ 0.5.
+The automated pass gate is necessary but not sufficient for stakeholder usefulness —
+human review (`docs/genai_evaluation_rubric.md`) is the authoritative quality signal.
+
+#### Fixture-based evaluation set
+
+`tests/fixtures/genai_evaluation_cases.json` — 15 report-level + 8 portfolio-level labelled cases:
+
+- 12 report cases expected to **pass** (growing, declining, stable, inactive, privacy-suppressed,
+  high-uncertainty, insufficient model health, missing metadata, conflicting signals, etc.)
+- 3 report cases expected to **fail** (retirement language, hallucinated number, incorrect direction)
+- 5 portfolio cases expected to **pass** (stable, elevated decline, high uncertainty, all-insufficient model evidence, partial privacy suppression)
+- 3 portfolio cases expected to **pass** (shortlist capped, missing metadata, valid fallback)
+
+Tests in `tests/test_genai_evaluation.py` run all fixture cases through the deterministic
+evaluators and assert that the actual outcome matches `expected_validation_outcome`.
+
+#### Golden regression testing
+
+`tests/fixtures/genai_golden_outputs.json` — 10 golden configs (concept-level expectations only,
+no exact text). Each config defines `required_concepts`, `prohibited_concepts`, `schema_fields`,
+`evidence_limitations_keywords`, and (for report-level) `expected_action_keywords`. Used by
+`compare_against_golden()` to verify that a regenerated insight preserves key semantic properties
+after a prompt or model version change.
+
+Two golden configs mark expected-fail cases (retirement language, hallucinated number) — used to
+confirm the safety and numerical checks still catch those cases after any code change.
+
+#### Regression against stored outputs
+
+```python
+from src.genai.evaluation import run_regression_against_stored_outputs
+summary = run_regression_against_stored_outputs()
+```
+
+Loads `outputs/analytics/mart_report_analytics.csv`, `outputs/insights/report_ai_insights.json`,
+and `outputs/insights/portfolio_ai_insight.json`. Evaluates every stored insight against its
+mart context and writes timestamped results to `outputs/evaluation/`.
+
+**Note on current stored outputs:** in this environment no API key is configured, so all stored
+outputs are rule-based fallbacks. Rule-based evaluation confirms that the deterministic fallback
+path produces valid, grounded, safe outputs. It does not validate the live LLM generation path.
+LLM evaluation requires a separate run with `generation_status='success'` entries.
+
+#### Human-review rubric
+
+`docs/genai_evaluation_rubric.md` defines a 7-dimension 1–5 scoring rubric covering:
+Factual Groundedness, Evidence Disclosure, Action Alignment, Readability, Conciseness,
+Safety and Boundary Respect, and Stakeholder Usefulness. The rubric is used for periodic
+human review and cannot be replaced by automated checks.
+
+Recommended cadence: full rubric review on every prompt version change or model version change;
+quarterly spot-check of 10 insights otherwise.

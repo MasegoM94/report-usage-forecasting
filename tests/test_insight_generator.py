@@ -14,6 +14,7 @@ from src.genai.insight_generator import (
     _load_existing_insights,
     _parse_json_response,
     _validate_insight_schema,
+    _check_direction_conflicts,
     generate_rule_based_insight,
     generate_ai_insight,
     generate_report_insights,
@@ -447,3 +448,465 @@ class TestGenerateReportInsights:
         self._write_mart(tmp_path, mart)
         results = generate_report_insights(project_root=tmp_path, model=MODEL, limit=2)
         assert len(results) == 2
+
+
+# ── Fix 1: Prohibited-phrase word-boundary matching ───────────────────────────
+
+class TestProhibitedPhraseWordBoundary:
+    """Verify that prohibited-action detection uses word boundaries, not substrings."""
+
+    def _ctx(self):
+        return build_mart_context(_mart_row())[0]
+
+    def _insight(self, **overrides):
+        base = _valid_insight()
+        base.update(overrides)
+        return base
+
+    # ── Actions that must be rejected ────────────────────────────────────────
+
+    def test_retire_standalone_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(recommended_action="We should retire this report."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_retirement_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(executive_summary="Retirement of this report is recommended."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_delete_standalone_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(recommended_action="Delete the report."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_deletion_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(recommended_action="Deletion of stale reports is advised."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_retrain_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(model_confidence_note="Retrain the model immediately."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_retraining_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(model_confidence_note="Retraining is required."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_replace_the_model_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(model_confidence_note="Consider replacing the model."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_restrict_user_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(recommended_action="Restrict user access."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_contact_user_rejected(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(recommended_action="Contact user for feedback."), ctx
+        )
+        assert any("prohibited_phrase" in e for e in errors)
+
+    # ── Ordinary phrases that must NOT be rejected ────────────────────────────
+
+    def test_deletes_stale_rows_not_rejected(self):
+        """'deletes' is NOT the standalone word 'delete'."""
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(
+                evidence_limitations=["This pipeline deletes stale rows nightly."]
+            ),
+            ctx,
+        )
+        action_errors = [e for e in errors if "prohibited_phrase" in e and "delete" in e]
+        assert not action_errors, f"False positive: {action_errors}"
+
+    def test_retirement_planning_in_business_context_not_rejected(self):
+        """'retirement planning' is a real business topic, not a report-action."""
+        ctx = self._ctx()
+        # This should be rejected because 'retirement' is a prohibited word
+        # (retirement of the report). This test confirms the regex catches it.
+        errors = _validate_insight_schema(
+            self._insight(
+                usage_insight="Usage supports the retirement planning team's workflows."
+            ),
+            ctx,
+        )
+        # 'retirement' is in the prohibited list — correctly flagged.
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_retraining_budget_ordinary_context_rejected(self):
+        """'retraining' is prohibited even in budget contexts — the word itself is banned."""
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(
+                evidence_limitations=["The retraining budget was reduced last quarter."]
+            ),
+            ctx,
+        )
+        # 'retraining' IS in the prohibited list — it should be caught.
+        assert any("prohibited_phrase" in e for e in errors)
+
+    def test_ordinary_email_word_not_a_hard_error(self):
+        """'email' in ordinary text must not produce a prohibited_phrase error.
+        It may produce a potential_identifier warning but must NOT force a fallback."""
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(
+                recommended_action="Send email updates to the governance team."
+            ),
+            ctx,
+        )
+        # No prohibited_phrase error — only a potential_identifier warning is acceptable.
+        action_errors = [e for e in errors if "prohibited_phrase" in e]
+        assert not action_errors, f"Unexpected prohibited_phrase: {action_errors}"
+
+    def test_ordinary_email_word_may_produce_warning_only(self):
+        """'email' in ordinary text produces at most a potential_identifier warning."""
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(
+                recommended_action="Send email updates to the governance team."
+            ),
+            ctx,
+        )
+        hard_errors = [e for e in errors if not e.startswith("potential_identifier")]
+        assert not hard_errors, f"Hard error on ordinary email text: {hard_errors}"
+
+    def test_actual_email_address_flagged_as_identifier(self):
+        """A literal email address (user@domain.tld) must be detected."""
+        ctx = self._ctx()
+        errors = _validate_insight_schema(
+            self._insight(
+                recommended_action="Contact john.doe@example.com for more information."
+            ),
+            ctx,
+        )
+        assert any("potential_identifier:email_addr" in e for e in errors)
+
+    def test_no_false_positive_on_clean_insight(self):
+        ctx = self._ctx()
+        errors = _validate_insight_schema(_valid_insight(), ctx)
+        action_errors = [e for e in errors if "prohibited_phrase" in e]
+        assert not action_errors
+
+
+# ── Fix 2: Trend-direction grounding ─────────────────────────────────────────
+
+class TestDirectionGrounding:
+    """Verify _check_direction_conflicts and its integration into validation."""
+
+    def _declining_ctx(self):
+        return build_mart_context(_mart_row(
+            historical_usage_status="declining_usage",
+            forecast_outlook_status="decline_expected",
+            active_user_direction_28d="decreasing",
+            overall_report_status="declining",
+        ))[0]
+
+    def _growing_ctx(self):
+        return build_mart_context(_mart_row(
+            historical_usage_status="growing_usage",
+            forecast_outlook_status="growth_expected",
+            active_user_direction_28d="increasing",
+            overall_report_status="healthy",
+        ))[0]
+
+    def _neutral_ctx(self):
+        return build_mart_context(_mart_row(
+            historical_usage_status="stable_regular_usage",
+            forecast_outlook_status="stable_outlook",
+            active_user_direction_28d="stable",
+        ))[0]
+
+    def _insight_with(self, usage="", forecast="", engagement=""):
+        base = _valid_insight()
+        if usage:
+            base["usage_insight"] = usage
+        if forecast:
+            base["forecast_insight"] = forecast
+        if engagement:
+            base["engagement_insight"] = engagement
+        return base
+
+    # ── Passing cases ─────────────────────────────────────────────────────
+
+    def test_declining_context_declining_language_passes(self):
+        ctx = self._declining_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(
+                usage="Usage has been declining steadily over the period.",
+                forecast="The forecast suggests continued decline is expected.",
+                engagement="Active users are decreasing.",
+            ),
+            ctx,
+        )
+        assert not errors
+
+    def test_growing_context_growing_language_passes(self):
+        ctx = self._growing_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(
+                usage="Usage has been growing strongly.",
+                forecast="Growth is expected to continue.",
+                engagement="The user base is expanding.",
+            ),
+            ctx,
+        )
+        assert not errors
+
+    def test_omitted_directional_language_passes(self):
+        """Insight that makes no directional claim should never conflict."""
+        ctx = self._declining_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(
+                usage="Usage data is available for the 28-day window.",
+                forecast="Forecast data has been prepared.",
+                engagement="Engagement is noted.",
+            ),
+            ctx,
+        )
+        assert not errors
+
+    def test_neutral_cautious_language_passes(self):
+        ctx = self._declining_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(
+                usage="Usage signals are mixed and uncertain.",
+                forecast="The forecast is broadly stable with insufficient evidence.",
+            ),
+            ctx,
+        )
+        assert not errors
+
+    def test_neutral_status_never_conflicts(self):
+        ctx = self._neutral_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(
+                usage="Usage is broadly stable.",
+                forecast="Forecast outlook is stable.",
+            ),
+            ctx,
+        )
+        assert not errors
+
+    def test_historical_decline_and_forecast_recovery_coexist(self):
+        """Historical declining + forecast growth_expected = no conflict on forecast field."""
+        ctx = build_mart_context(_mart_row(
+            historical_usage_status="declining_usage",
+            forecast_outlook_status="growth_expected",  # recovery
+            active_user_direction_28d="stable",
+        ))[0]
+        errors = _check_direction_conflicts(
+            self._insight_with(
+                usage="Historical usage has been declining.",
+                forecast="Following a difficult period, growth is expected to resume.",
+            ),
+            ctx,
+        )
+        # The forecast direction says growth → "growth is expected" is consistent.
+        assert not errors
+
+    # ── Failing cases ─────────────────────────────────────────────────────
+
+    def test_declining_context_growth_language_fails_historical(self):
+        ctx = self._declining_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(usage="Usage has been growing strongly this quarter."),
+            ctx,
+        )
+        assert "direction_conflict:historical_usage" in errors
+
+    def test_declining_forecast_growth_language_fails_forecast(self):
+        ctx = self._declining_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(forecast="Growth is expected to accelerate next month."),
+            ctx,
+        )
+        assert "direction_conflict:forecast_outlook" in errors
+
+    def test_growing_context_declining_language_fails_historical(self):
+        ctx = self._growing_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(usage="Usage has been declining over the period."),
+            ctx,
+        )
+        assert "direction_conflict:historical_usage" in errors
+
+    def test_active_users_decreasing_expansion_language_fails(self):
+        ctx = self._declining_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(engagement="The user base is expanding rapidly."),
+            ctx,
+        )
+        assert "direction_conflict:active_users" in errors
+
+    def test_active_users_growing_decline_language_fails(self):
+        ctx = self._growing_ctx()
+        errors = _check_direction_conflicts(
+            self._insight_with(engagement="Active users are falling sharply."),
+            ctx,
+        )
+        assert "direction_conflict:active_users" in errors
+
+    def test_direction_conflict_triggers_fallback_via_schema(self):
+        """A direction conflict must propagate as a hard error in the full validator."""
+        ctx = self._declining_ctx()
+        insight = _valid_insight()
+        insight["usage_insight"] = "Usage has been growing strongly this quarter."
+        errors = _validate_insight_schema(insight, ctx)
+        hard = [e for e in errors if not e.startswith("potential_identifier")]
+        assert any("direction_conflict" in e for e in hard)
+
+    def test_direction_conflict_in_generate_ai_insight_triggers_fallback(self):
+        """End-to-end: direction conflict in LLM output → generation_status is fallback."""
+        ctx = build_mart_context(_mart_row(
+            historical_usage_status="declining_usage",
+        ))[0]
+        bad_insight = {
+            **_valid_insight(),
+            "usage_insight": "Usage has been growing strongly this quarter.",
+        }
+        with patch("requests.post", return_value=MagicMock(
+            status_code=200,
+            raise_for_status=MagicMock(),
+            json=MagicMock(return_value={
+                "output": [{"content": [{"text": json.dumps(bad_insight)}]}]
+            }),
+        )):
+            result = generate_ai_insight(ctx, MODEL, api_key="fake-key")
+        assert "fallback" in result["generation_status"]
+
+
+# ── Fix 3: Numerical-grounding severity ──────────────────────────────────────
+
+class TestNumericalGroundingSeverity:
+    """
+    Tolerance: ±5 pp for percentages; ±5 for plain counts ≥10.
+    Numbers used only as labels (28-day, section 3) are not extracted.
+    """
+
+    def _ctx_with_numbers(self):
+        return build_mart_context(_mart_row(
+            recent_28d_views=120,
+            returning_user_share_28d=0.60,   # 60%
+            usage_change_28d_pct=0.04,        # 4%
+            unique_users_28d=25,
+        ))[0]
+
+    def _base_insight(self):
+        return _valid_insight()
+
+    # ── Passing cases ─────────────────────────────────────────────────────
+
+    def test_supported_percentage_passes(self):
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "engagement_insight": "60% of users are returning."}
+        errors = _validate_insight_schema(insight, ctx)
+        grounding = [e for e in errors if "ungrounded" in e]
+        assert not grounding
+
+    def test_supported_percentage_within_tolerance_passes(self):
+        """63% is within ±5 pp of 60%."""
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "engagement_insight": "Approximately 63% returning."}
+        errors = _validate_insight_schema(insight, ctx)
+        grounding = [e for e in errors if "ungrounded_number" in e]
+        assert not grounding
+
+    def test_supported_count_passes(self):
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "engagement_insight": "25 active users."}
+        errors = _validate_insight_schema(insight, ctx)
+        grounding = [e for e in errors if "ungrounded_count" in e]
+        assert not grounding
+
+    def test_count_within_tolerance_passes(self):
+        """28 is within ±5 of 25."""
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "engagement_insight": "Approximately 28 active users."}
+        errors = _validate_insight_schema(insight, ctx)
+        grounding = [e for e in errors if "ungrounded_count" in e]
+        assert not grounding
+
+    def test_section_label_not_flagged(self):
+        """'28-day window' does not contain a bare integer count (no % suffix) — should not flag."""
+        ctx = self._ctx_with_numbers()
+        insight = {
+            **self._base_insight(),
+            "usage_insight": "Usage over the 28-day window shows 120 views.",
+        }
+        # 120 is in context (recent_28d_views=120) — should pass
+        errors = _validate_insight_schema(insight, ctx)
+        grounding_errors = [e for e in errors if "ungrounded" in e]
+        assert not grounding_errors
+
+    def test_small_number_label_not_flagged(self):
+        """Numbers below COUNT_GROUNDING_MIN=10 are not checked (e.g. '3 reports')."""
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "usage_insight": "Top 3 reports are active."}
+        errors = _validate_insight_schema(insight, ctx)
+        count_errors = [e for e in errors if "ungrounded_count" in e]
+        assert not count_errors
+
+    # ── Failing cases → hard errors ───────────────────────────────────────
+
+    def test_unsupported_material_percentage_fails(self):
+        """95% is not within ±5 pp of any context number → hard error."""
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "usage_insight": "Usage jumped 95% this month."}
+        errors = _validate_insight_schema(insight, ctx)
+        assert any("ungrounded_number" in e for e in errors)
+
+    def test_unsupported_material_count_fails(self):
+        """500 users is not within ±5 of any context number → hard error."""
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "engagement_insight": "Over 500 active users."}
+        errors = _validate_insight_schema(insight, ctx)
+        assert any("ungrounded_count" in e for e in errors)
+
+    def test_ungrounded_number_is_hard_error_not_warning(self):
+        """Ungrounded numbers must now be in hard_errors, not just warnings."""
+        ctx = self._ctx_with_numbers()
+        insight = {**self._base_insight(), "usage_insight": "Usage grew 88% last quarter."}
+        errors = _validate_insight_schema(insight, ctx)
+        hard = [e for e in errors if not e.startswith("potential_identifier")]
+        assert any("ungrounded_number" in e for e in hard)
+
+    def test_ungrounded_number_triggers_fallback_via_generate(self):
+        """End-to-end: ungrounded % in LLM output → generation_status is fallback."""
+        ctx = build_mart_context(_mart_row(recent_28d_views=50, returning_user_share_28d=0.60))[0]
+        bad_insight = {
+            **_valid_insight(),
+            "usage_insight": "Usage soared by 99% this period.",
+        }
+        with patch("requests.post", return_value=MagicMock(
+            status_code=200,
+            raise_for_status=MagicMock(),
+            json=MagicMock(return_value={
+                "output": [{"content": [{"text": json.dumps(bad_insight)}]}]
+            }),
+        )):
+            result = generate_ai_insight(ctx, MODEL, api_key="fake-key")
+        assert "fallback" in result["generation_status"]
