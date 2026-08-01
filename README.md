@@ -1,367 +1,103 @@
-# Power BI Usage Intelligence: Forecasting, Behavioural Analytics, and GenAI Insights
+# Power BI Usage Intelligence
 
-This project explores how synthetic Power BI-style usage data can be turned into practical intelligence for analytics teams. The current version includes a notebook-first forecasting baseline, behavioural analytics, report and user segmentation, diagnostics, and a lightweight batch GenAI insight layer built from shareable synthetic data.
+**Forecasting, engagement analytics, model diagnostics, and governed GenAI insights for report-usage monitoring.**
 
-The repository is structured so the workflow can be reviewed through notebooks or regenerated through Python scripts, while leaving a clean foundation for future modelling, evaluation, and demo work.
+---
 
-## Project Overview
+## Overview
 
-The notebooks demonstrate an end-to-end workflow for report usage forecasting, behavioural analytics, and GenAI-assisted insight generation:
+This project demonstrates an end-to-end analytics workflow for monitoring Power BI report usage. It uses synthetic report-usage telemetry to identify trends, forecast demand 28 days ahead, evaluate model reliability, and measure user engagement — all while preserving privacy. Report-level and portfolio-level insights are generated offline by a governed GenAI layer and presented through a Streamlit reviewer application.
 
-- Generates synthetic report usage data with weekly patterns, trend, noise, and zero-activity days.
-- Builds a clean semantic model from raw telemetry-style tables.
-- Validates the semantic model before feature engineering.
-- Builds a canonical daily report series (`mart_report_daily_series`) with one row per active report-date, zero-filling missing active days.
-- Builds diagnostic context marts for engagement and performance (`mart_report_daily_context`).
-- Applies data sufficiency checks after the complete daily series is built.
-- Trains per-report Auto-ARIMA models on the univariate daily-views series.
-- Compares model performance against naive and seasonal-naive baselines.
-- Builds report and user analytics outputs, including segmentation and diagnostics.
-- Publishes forecast, metrics, segment, diagnostic, validation, and insight outputs for downstream review.
+The project is designed as a portfolio-friendly version of a realistic analytics problem. It demonstrates production-oriented design decisions — privacy suppression, evidence gating, deterministic decision logic, structured GenAI output, and offline insight generation — without exposing real organisational data.
 
-The project is designed as a portfolio-friendly version of a realistic analytics problem, without exposing private Power BI or organisational usage data.
+---
 
 ## Business Problem
 
-Analytics teams often know which Power BI reports exist, but not which ones are becoming more important, which ones are losing engagement, or where future demand may require support. A usage intelligence workflow can help answer questions such as:
+Analytics and reporting teams often need to understand more than which reports exist. Specifically:
 
-- Which reports are likely to see higher demand over the next month?
-- Which reports have stable enough usage patterns to forecast responsibly?
-- Which reports should be monitored because their usage is volatile, declining, or difficult to predict?
-- How can GenAI summaries help stakeholders understand changes in report behaviour?
+- Which reports are gaining or losing demand, and at what rate?
+- Which reports have sustained or weakening user engagement?
+- Which forecasts can be interpreted reliably, and where is the model evidence thin?
+- Which reports require active review, and why?
+- When evidence is weak, does the problem lie with the report or with the model?
+- How can technical analytical outputs be communicated clearly to non-technical stakeholders?
 
-The current project includes the forecasting feature layer, behavioural analytics outputs, performance telemetry features, and a lightweight batch GenAI insight layer. Richer modelling beyond the baseline remains a planned extension.
+This project builds an analytical framework that addresses each of these questions with verifiable, privacy-safe outputs.
+
+---
+
+## Key Capabilities
+
+- **Synthetic telemetry and semantic modelling** — generates realistic report-usage data and structures it into a clean analytical model.
+- **Complete daily time-series construction** — fills activity gaps, separates no-view days from no-data days, and applies data-sufficiency gates before any model is fitted.
+- **Per-report forecasting with rolling-origin backtesting** — evaluates candidate models across multiple walk-forward folds, selects the best fit per report, and produces 28-day prediction intervals.
+- **Model diagnostics and evidence maturity tracking** — monitors bias, residual autocorrelation, and interval calibration; distinguishes insufficient evidence from poor performance.
+- **Privacy-safe engagement analytics** — measures unique users, returning usage, lapse cohorts, activity frequency, and concentration; suppresses small-group metrics before output.
+- **Canonical report analytics mart** — joins historical usage, forecast outlook, model health, engagement context, metadata, and diagnostics into one decision-support table per report.
+- **Report-level and portfolio-level GenAI insights** — generates structured, grounded summaries offline using validated analytical outputs as the sole evidence base; no live LLM calls at display time.
+- **Streamlit portfolio and report explorer** — presents persisted outputs through an interactive application with search, filters, a deterministic attention shortlist, and per-report drill-down.
+
+---
 
 ## Architecture
 
-The pipeline separates three concerns — modelling inputs, diagnostic context, and insight context — at the mart layer:
-
-```text
-Raw event facts (event-level, no fabricated zeros)
-        |
-        v
-Semantic model (dimensions + facts)
-        |
-        +---> mart_report_daily_series      <- SARIMA input: report_id, date, daily_views
-        |     (one row per active report-date; missing active days filled with zero)
-        |
-        +---> mart_report_daily_context     <- Diagnostic context: wide engagement +
-        |     (joins adoption, engagement,     performance columns; NOT passed to SARIMA)
-        |      and performance features)
-        |
-        v
-Forecasting pipeline
-  - consumes mart_report_daily_series only
-  - strips all non-target columns before fitting
-  - gates on data sufficiency after series is built
-        |
-        v
-Forecast + metrics outputs
-        |
-        +---> mart_report_insight_context   <- GenAI / Streamlit context: joins forecast
-              (post-forecast summary per         reliability with report-level features
-               report_id)
+```mermaid
+flowchart TD
+    A[Synthetic usage data] --> B[Data preparation and validation]
+    B --> C[Historical usage and engagement analytics]
+    C --> D[Forecasting, backtesting, and model diagnostics]
+    D --> E[Canonical report analytics mart]
+    E --> F[Report and portfolio GenAI insight layers]
+    F --> G[Streamlit reviewer application]
 ```
 
-See [docs/architecture.md](docs/architecture.md) for the full pipeline tree and mart boundary rules.
+**Design principles:**
 
-## What Makes This Project Different
+- Deterministic analytics calculate metrics, statuses, and recommended actions.
+- GenAI explains validated evidence — it does not recalculate it.
+- Streamlit presents persisted outputs and does not recreate upstream decision logic.
+- No live LLM calls occur during page rendering.
 
-This is not just a time-series notebook. The aim is to show how forecasting can become part of a broader usage intelligence product:
+> The analytics layer calculates and decides; the GenAI layer explains.
 
-- **Forecasting:** univariate SARIMA on a clean zero-filled daily series with defensible baseline comparisons.
-- **Behavioural analytics:** feature marts for repeat use, concentration, inactivity gaps, and page-depth proxies.
-- **Performance telemetry:** feature marts for load-time levels, tails, and rolling performance signals.
-- **GenAI insight layer:** lightweight batch-generated report summaries that explain forecast changes, risks, and stakeholder actions in plain language.
-- **Operational thinking:** outputs include schema-safe tables, forecast history, realised-error backfill, and data-sufficiency diagnostics.
+---
 
-The GenAI layer is intentionally lightweight in Version 0.1. It reads existing CSV outputs and writes structured report-level insights without adding a chatbot, vector database, or app layer.
+## How the Solution Supports Decisions
 
-## Repository Structure
-
-```text
-report-usage-forecasting/
-├── data/
-│   ├── raw/                      # Synthetic raw telemetry-style CSV tables
-│   └── processed/                # Clean semantic model CSV tables and feature marts
-│       ├── mart_report_daily_series.csv     # Canonical SARIMA input (5 cols)
-│       ├── mart_report_daily_context.csv    # Wide diagnostic context mart
-│       └── mart_report_insight_context.csv  # Post-forecast report-level summary
-├── docs/
-│   ├── architecture.md           # Pipeline tree and mart boundary rules
-│   ├── data_model.md             # Semantic model table definitions
-│   └── feature_engineering.md   # Feature definitions, null policy, active-period rules
-├── notebooks/
-│   ├── 01_generate_raw_tables.ipynb
-│   ├── 02_build_semantic_model_csv.ipynb
-│   ├── 03_validate_semantic_model_hybrid_gx_csv.ipynb
-│   ├── 04_feature_engineering.ipynb
-│   ├── 05_forecasting_baseline.ipynb
-│   ├── 06_model_diagnostics.ipynb
-│   ├── 07_report_analytics.ipynb
-│   ├── 08_user_analytics.ipynb
-│   ├── 09_report_analytics.ipynb
-│   └── 10_genai_insights.ipynb
-├── outputs/
-│   ├── validation/               # Validation results and reconciliation outputs
-│   ├── forecasts/                # Latest forecasts and forecast history
-│   │   ├── production_forecasts_history.csv   # Canonical production forecast log (append-only)
-│   │   └── forecasts_history.csv              # Legacy forecast log (read by migration only)
-│   ├── metrics/                  # Latest metrics, model comparisons, and realized history
-│   │   └── realized_forecast_history.csv      # CANONICAL realized forecast history (24-column schema)
-│   │                                          # Source of truth for all post-hoc accuracy monitoring.
-│   │                                          # realized_errors_history.csv is LEGACY — do not read it.
-│   ├── archive/                  # Retired files (e.g. migrated realized_errors_history snapshots)
-│   ├── segments/                 # Report and user segmentation outputs
-│   ├── diagnostics/              # Diagnostic rule outputs
-│   ├── insights/                 # Batch-generated GenAI insight outputs
-│   └── anomalies/                # Optional anomaly outputs placeholder
-├── src/
-│   ├── data/
-│   │   ├── generate_synthetic_data.py
-│   │   ├── build_semantic_model.py
-│   │   └── validate_model.py
-│   ├── features/
-│   │   ├── report_features.py        # Daily adoption series + rolling usage features
-│   │   ├── engagement_features.py    # User engagement features (diagnostic context)
-│   │   ├── performance_features.py   # Load-time features (diagnostic context)
-│   │   └── build_forecast_features.py  # mart_report_daily_context assembler
-│   ├── models/
-│   │   ├── baselines.py
-│   │   └── evaluate.py
-│   ├── analytics/
-│   │   ├── report_features.py
-│   │   ├── report_segmentation.py
-│   │   ├── report_diagnostics.py
-│   │   ├── user_features.py
-│   │   └── user_segmentation.py
-│   ├── genai/
-│   │   ├── prompts.py
-│   │   └── insight_generator.py
-│   └── pipelines/
-│       ├── run_forecasting_pipeline.py
-│       ├── run_report_analytics_pipeline.py
-│       └── run_user_analytics_pipeline.py
-├── tests/
-│   ├── test_feature_engineering_integration.py
-│   ├── test_forecasting_pipeline_smoke.py
-│   └── test_temporal_leakage.py
-├── .gitignore
-├── LICENSE
-├── README.md
-└── requirements.txt
-```
-
-## Environment Setup
-
-### Prerequisites
-
-- **Python 3.10 or 3.11** (tested; Python 3.12 is compatible). Python 3.9 is the minimum supported by the pinned dependencies.
-- No package installation is required beyond `pip install -r requirements.txt`.
-
-### 1 — Create a virtual environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # macOS / Linux
-# .venv\Scripts\activate         # Windows
-```
-
-### 2 — Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-All packages are pinned to exact versions. The install is deterministic.
-
-### 3 — Optional: configure the GenAI API key
-
-Copy the template and fill in your key:
-
-```bash
-cp .env.example .env
-# then edit .env and set OPENAI_API_KEY=sk-...
-```
-
-**The API key is optional.** Without it:
-
-- All 3 580 tests pass.
-- The Streamlit reviewer app displays stored outputs without modification.
-- The GenAI pipeline (`src/genai/insight_generator.py`) falls back to deterministic rule-based summaries.
-
-The key is required only when regenerating live LLM insights via `python -m src.genai.insight_generator`.
-
-### 4 — Generated artifacts
-
-The `outputs/` directory is excluded from git. Before opening the Streamlit app, you must generate the analytics outputs by running the notebooks or the Python pipeline scripts in order (see [Running the Data Pipeline](#running-the-data-pipeline) below).
-
-### 5 — Run the tests
-
-```bash
-pytest
-```
-
-Expected result: 3 580 passed, 101 skipped, 0 failures. Runtime: approximately 2 minutes.
-
-### 6 — Start the Streamlit reviewer app
-
-After generating outputs:
-
-```bash
-streamlit run src/app/streamlit_app.py
-```
-
-## How To Run
-
-From the project root:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-jupyter notebook notebooks/01_generate_raw_tables.ipynb
-```
-
-Then run the notebooks in order. Generated CSV outputs are written to `data/raw/`, `data/processed/`, and the project-level `outputs/` folder.
-
-To open the lightweight reviewer app after outputs have been generated:
-
-```bash
-streamlit run src/app/streamlit_app.py
-```
-
-## Running the Data Pipeline
-
-The data pipeline can be run in two ways:
-
-- **Notebooks** for exploration, transparency, and storytelling.
-- **Python scripts** for a repeatable CSV-based pipeline.
-
-Pipeline flow:
-
-```text
-data/raw/
-    -> data/processed/                         (semantic model)
-    -> data/processed/mart_report_daily_series.csv   (SARIMA input, produced by Notebook 04)
-    -> outputs/validation/                     (data quality results)
-    -> outputs/forecasts/ + outputs/metrics/   (produced by Notebook 05)
-```
-
-### Option 1 — Run via Notebooks (Recommended for exploration)
-
-Use this path when you want to inspect the logic, understand the modelling choices, or walk through the workflow step by step.
-
-Run the notebooks in this order:
-
-1. `notebooks/01_generate_raw_tables.ipynb`
-   - Generates synthetic raw telemetry-style tables.
-   - Writes CSV files to `data/raw/`.
-
-2. `notebooks/02_build_semantic_model_csv.ipynb`
-   - Builds clean dimension and fact tables.
-   - Writes CSV files to `data/processed/`.
-
-3. `notebooks/03_validate_semantic_model_hybrid_gx_csv.ipynb`
-   - Runs data quality checks using Great Expectations and pandas.
-   - Writes validation outputs to `outputs/validation/`.
-
-4. `notebooks/04_feature_engineering.ipynb`
-   - Builds the canonical daily series (`mart_report_daily_series`), the wide diagnostic
-     context mart (`mart_report_daily_context`), and supporting feature marts.
-   - Applies zero-fill for missing active days; never inserts fabricated events into fact tables.
-   - Writes feature tables to `data/processed/`.
-
-5. `notebooks/05_forecasting_baseline.ipynb`
-   - Reads `data/processed/mart_report_daily_series.csv` as the canonical SARIMA input.
-   - Strips all engagement and performance columns before fitting — only `daily_views` reaches the model.
-   - Applies data sufficiency gating after the complete series is built.
-   - Trains the forecasting baseline and writes model outputs to `outputs/`.
-
-6. `notebooks/06_model_diagnostics.ipynb` *(Sprint 5)*
-   - Loads all 19 diagnostic output files from `outputs/diagnostics/`.
-   - Explores autocorrelation, bias stability, outlier, distribution, and interval calibration diagnostics.
-   - Displays the consolidated model-health summary from `report_model_diagnostics_latest.csv`.
-   - Read-only: does not rerun the pipeline, generate synthetic data, or alter model selection.
-
-7. `notebooks/07_report_analytics.ipynb`
-   - Builds report-level analytics, segmentation, and diagnostics.
-   - Writes outputs to `outputs/segments/`, `outputs/diagnostics/`, and `outputs/metrics/`.
-
-8. `notebooks/08_user_analytics.ipynb`
-   - Builds user-level engagement features and segmentation outputs.
-   - Writes outputs to `outputs/segments/` and `outputs/metrics/`.
-
-9. `notebooks/09_report_analytics.ipynb`
-   - Sprint 7 decision-support mart: combines historical usage, forecast outlook, model health,
-     engagement context, metadata, diagnostics, and segmentation into `mart_report_analytics.csv`.
-
-10. `notebooks/10_genai_insights.ipynb`
-    - Reads forecast, model performance, segment, and diagnostic CSV outputs.
-    - Writes AI insight outputs to `outputs/insights/`.
-
-### Option 2 — Run via Python Scripts (Reproducible pipeline)
-
-Use this path when you want to regenerate the pipeline outputs consistently from the command line.
-
-From the project root, run:
-
-```bash
-python src/data/generate_synthetic_data.py
-python src/data/build_semantic_model.py
-python src/data/validate_model.py
-python -m src.pipelines.run_forecasting_pipeline
-python -m src.pipelines.run_report_analytics_pipeline
-python -m src.pipelines.run_user_analytics_pipeline
-python -m src.genai.insight_generator
-```
-
-The scripts perform the same core workflow as the notebooks:
-
-- `generate_synthetic_data.py` creates raw synthetic tables in `data/raw/`.
-- `build_semantic_model.py` builds cleaned dimensions and fact tables in `data/processed/`.
-- `validate_model.py` runs validation checks and writes results to `outputs/validation/`.
-- `run_forecasting_pipeline.py` prefers `data/processed/mart_report_daily_series.csv` as its input.
-  Falls back to `mart_report_daily_context.csv` and older processed tables when the canonical file
-  is absent. Engagement and performance columns are stripped before fitting regardless of source.
-  Writes forecast outputs to `outputs/forecasts/` and metrics outputs to `outputs/metrics/`.
-- `run_report_analytics_pipeline.py` writes report segments and diagnostics to `outputs/segments/`
-  and `outputs/diagnostics/`.
-- `run_user_analytics_pipeline.py` writes user engagement features and user segments to
-  `outputs/metrics/` and `outputs/segments/`.
-- `insight_generator.py` reads `outputs/analytics/mart_report_analytics.csv` as its sole
-  analytics input and writes structured, lineage-enriched insights to
-  `outputs/insights/report_ai_insights.json`. `portfolio_insights.py` reads the same mart
-  and writes the portfolio-level insight to `outputs/insights/portfolio_ai_insight.json`.
-
-## Current Outputs
-
-- `outputs/forecasts/` stores forecast outputs.
-- `outputs/metrics/` stores model performance and comparison outputs.
-- `outputs/segments/` stores report and user segmentation outputs.
-- `outputs/diagnostics/` stores diagnostic rule outputs.
-- `outputs/analytics/` stores the canonical analytics mart (`mart_report_analytics.csv`, `mart_report_engagement.csv`).
-- `outputs/insights/` stores GenAI-generated insight outputs (report-level and portfolio-level).
-- `outputs/evaluation/` stores GenAI evaluation results and regression summaries.
-- `outputs/validation/` stores validation and reconciliation outputs.
-
-## Generated Artifact Policy
-
-All analytics outputs are **reproducible pipeline artifacts** and are intentionally excluded from git.
-
-| Category | Committed | Reason |
+| Analytical signal | Example interpretation | Possible stakeholder response |
 |---|---|---|
-| `data/raw/` — synthetic telemetry CSVs | No | Regenerated by `notebooks/01_generate_raw_tables.ipynb` |
-| `data/processed/` — semantic model and feature marts | No | Regenerated by notebooks 02–04 |
-| `outputs/analytics/` — analytics mart CSVs | No | Regenerated by `notebooks/09_report_analytics.ipynb` |
-| `outputs/forecasts/` — production forecasts | No | Regenerated by `notebooks/05_forecasting_baseline.ipynb` |
-| `outputs/insights/` — AI insights JSON | No | Regenerated by `notebooks/10_genai_insights.ipynb` or pipeline scripts |
-| `outputs/forecasts/sample_baseline_forecasts.csv` | **Yes** | Small illustrative sample; not a full pipeline output |
-| `tests/fixtures/genai_evaluation_cases.json` | **Yes** | Test fixtures; curated by hand |
-| `tests/fixtures/genai_golden_outputs.json` | **Yes** | Test fixtures; curated by hand |
-| `docs/` — architecture and methodology | **Yes** | Documentation is source, not generated output |
+| Declining usage status | Views have fallen consistently over 28 days | Investigate whether the report is still needed or being accessed through another route |
+| Elevated lapse rate | A high share of prior users have not returned | Review whether recent changes or communications affected access |
+| Forecast decline | Model predicts continued reduction over 28 days | Assess whether usage decline reflects shifting priorities |
+| High forecast uncertainty | Wide prediction interval; volatile historical pattern | Treat the forecast directionally rather than as a point estimate |
+| Insufficient model-health evidence | Fewer than three valid backtest folds completed | Treat the model as unvalidated rather than as performing poorly |
+| Missing metadata | Workspace, category, or launch date absent | Complete report inventory before acting on segmentation outputs |
+| Privacy-suppressed engagement | Fewer than five unique users in the window | No engagement details are available; suppressed values are not zero |
 
-To reproduce the full output set from scratch, follow the [Environment Setup](#environment-setup) steps and run the notebooks or pipeline scripts in order.
+Recommendations are for human review. No report is automatically retired, deleted, or reassigned.
+
+---
+
+## Methodology
+
+### Forecasting
+
+Each report receives its own model fitted to a clean, zero-filled daily-views series. Candidate models — including seasonal and non-seasonal ARIMA variants — are evaluated across rolling-origin backtest folds. The best-performing model per report is selected based on accuracy metrics including WAPE and MAPE. Forecasts cover a 28-day horizon and include prediction intervals. Data-sufficiency gates prevent modelling reports with inadequate history.
+
+### Engagement Analytics
+
+Engagement is measured at the report level using privacy-safe aggregates: unique users, returning users, lapse cohorts, activity frequency, and concentration (Herfindahl-Hirschman Index). Metrics for groups smaller than a configurable minimum are suppressed before output. Suppressed values are never treated as zero. Low engagement does not imply low business value; the analytics distinguish engagement patterns from usage volume.
+
+### Model Diagnostics
+
+The diagnostics layer monitors bias stability, residual autocorrelation, interval calibration, and evidence maturity across the per-report model population. Evidence maturity tracks how many valid backtest folds exist. **Insufficient evidence is a measurement-maturity signal, not a sign of a poorly performing model.** Reports with insufficient backtest history receive a distinct status rather than an unhealthy rating.
+
+### GenAI Insight Layer
+
+The validated canonical analytics mart (`mart_report_analytics.csv`) is the sole input to the GenAI layer. Report-level and portfolio-level contexts are constructed from privacy-safe aggregates before any prompt is sent. Outputs are structured JSON, persisted offline, and validated before use. Validation checks groundedness against the input evidence, directional consistency, numerical plausibility, safety, and evidence-limitation disclosures. When generation fails validation or no API key is present, a deterministic rule-based fallback is used. Input hashing avoids regenerating unchanged insights. The Streamlit application reads persisted insight files and makes no live LLM calls.
+
+---
 
 ## Streamlit Application
 
@@ -369,705 +105,189 @@ To reproduce the full output set from scratch, follow the [Environment Setup](#e
 streamlit run src/app/streamlit_app.py
 ```
 
-### Canonical inputs (Sprint 9+)
+The application has two tabs:
 
-The app reads the following outputs. Missing optional files produce a graceful empty state — the app does not crash.
+**Portfolio Overview** — headline metrics (total reports, recent usage, requiring review, high priority, privacy-suppressed), portfolio-level GenAI summary, deterministic attention shortlist (reports with high priority or non-standard recommended action), and status distributions across usage, forecast outlook, engagement, model health, and review priority.
 
-| Key | File | Required | Purpose |
-|-----|------|----------|---------|
-| `report_analytics` | `outputs/analytics/mart_report_analytics.csv` | Optional | Canonical report-level mart: one row per report, analytics run ID, as-of date, status, priority, recommended action |
-| `engagement` | `outputs/analytics/mart_report_engagement.csv` | Optional | Report-level engagement aggregates: returning-user share, concentration, active days, privacy suppression flags |
-| `insights` | `outputs/insights/report_ai_insights.json` | Optional | Report-level GenAI insights (Sprint 8 fields + legacy aliases) |
-| `forecasts` | `outputs/forecasts/report_view_forecasts_latest.csv` | Optional | Legacy forecast output (replaced by `production_forecasts_latest.csv` when present) |
-| `metrics` | `outputs/metrics/report_view_metrics_latest.csv` | Optional | Forecast accuracy metrics and reliability flags |
-| `segments` | `outputs/segments/report_segments.csv` | Optional | Report segment labels |
-| `diagnostics` | `outputs/diagnostics/report_diagnostics.csv` | Optional | Diagnostic flag columns |
+**Report Explorer** — per-report drill-down with search and multi-field filters. Each report view shows: summary header, deterministic review action, AI-generated summary, historical usage chart, forecast and prediction-interval chart, model-health evidence, engagement metrics (with suppression indicators), diagnostics and evidence quality, and lineage metadata in an expander.
 
-### Forecast date normalization
-
-Production forecast outputs use `forecast_date`; legacy outputs use `Date`. `normalize_forecast_date()` in `src/app/utils/load_data.py` promotes `forecast_date` → `Date` when `Date` is absent, so both sources work with the same chart code.
-
-### Caching
-
-`load_app_data()` is decorated with `@st.cache_data` when running inside a Streamlit session. File reads and normalization are cached for the duration of the session. To force a full reload during development, press **Shift + ⟳ Rerun** in the browser, or call `st.cache_data.clear()` from a Python console. Outside Streamlit (tests, scripts) the decorator is a no-op.
-
-### Privacy suppression
-
-Engagement fields that cannot be shown due to small user populations are displayed as **Suppressed (privacy)** — they are never shown as zero. The `privacy_suppression_status`, `*_privacy_suppressed`, and `privacy_suppressed_fields` columns in the engagement mart control this behaviour.
-
-### Accessibility, empty states, performance, and testing (Sprint 9 Step 6)
-
-**Chart accessibility:**
-
-- Forecast chart (`usage_forecast_chart`) distinguishes actuals from forecast using **both colour and line style**: actuals are a solid blue line with circle markers; the forecast is a dashed orange line with diamond markers.
-- The prediction interval band is labelled `"Prediction interval"` in the legend — never `"Confidence interval"`.
-- The chart includes a title (with report name), `Date` x-axis label, and `Views` y-axis label.
-- Invalid date values are coerced rather than raising.
-
-**Freshness and load-state indicators:**
-
-- The overview banner shows **analytics as-of date** and filtered report count. The analytics `run_id` is moved to the lineage expander (not shown inline).
-- The sidebar footer shows: canonical mart load status, report AI insight count, portfolio AI summary status.
-
-**Terminology corrections:**
-
-| Concept | Correct | Prohibited |
-|---------|---------|-----------|
-| Forecast shaded band | Prediction interval | Confidence interval |
-| `insufficient_evidence` | Evidence-maturity status | Unhealthy or poor model |
-| High concentration | Dependency risk | Misuse |
-| Low engagement | (may still be high value) | Low business value |
-| Recommended action | Recommendation, not executed | Automated action |
-
-**Tests added:**
-
-- `tests/test_app_smoke.py` — 44 tests: module imports, `available_reports`, `build_report_detail`, all 6 GenAI states, empty states, chart builder, schema validation.
-- `tests/test_load_data_integration.py` — 33 tests: fixture-based `load_app_data` integration tests covering complete, mart-only, missing files, malformed JSON, duplicate IDs, invalid dates, forecast date normalization, privacy suppression, insight loading, lineage mismatch.
-- `tests/test_privacy_evidence.py` — 40 tests: suppression never zero, insufficient evidence not unhealthy, concentration not misuse, recommended actions not automated, invalid GenAI not trusted, no user identifiers in app data.
-- `tests/test_filter_selection_integration.py` — 38 tests: end-to-end filter → search → report selection → detail assembly pipeline.
-
-**Sprint 9 total new tests: 330** (3580 passed, 101 skipped).
-
-**Sprint completion document:** [docs/sprint_9_completion.md](docs/sprint_9_completion.md)
+Both tabs are populated entirely from pre-generated analytical outputs. The application does not recalculate any analytical metric, call any external API, or execute any pipeline logic at render time.
 
 ---
 
-### Filters, navigation, and definitions (Sprint 9 Step 5)
+## Repository Structure
 
-The sidebar and portfolio overview were extended to support filterable views and consistent terminology.
-
-**Sidebar sections (in order):**
-
-1. **Report search** — case-insensitive substring match across `report_name`, `report_id`, and `workspace_name`.
-2. **Portfolio filters** (collapsible expander) — multiselect controls for up to 12 mart fields. A filter is only offered when the field has ≥ 2 distinct non-null values in the current portfolio.
-3. **Requires attention** toggle — shows only reports where `overall_review_priority ∈ {high, critical}` OR `recommended_report_action ≠ continue_monitoring`.
-4. **Display controls** — sort order selector (review priority, report name, recent usage).
-5. **Report selector** — shows only reports that match all active filters.
-
-**Filter behaviour:**
-
-- Filters are applied with AND logic across fields and OR logic within a field's selected values.
-- Portfolio distributions and "Showing X of Y reports" banner in the overview reflect the current filter selection.
-- The AI portfolio summary and the deterministic attention shortlist always reflect the **full portfolio** (not the current filter). Both display an explicit note when filters are active.
-- **Clear filters** increments a version counter (`_sf_v`) to atomically reset all Streamlit filter widgets to their defaults.
-
-**Centralised definitions (`src/app/utils/definitions.py`):**
-
-- `DEFINITIONS`: 19 concept explanations used as tooltip `help=` text (prediction interval, insufficient evidence, engagement status, concentration, privacy suppression, deterministic shortlist, GenAI summary, and more).
-- `STATUS_LABELS`: comprehensive `code → display string` mapping for all mart status values across all domain areas.
-- `status_label(code)`: safe lookup; returns `"—"` for null/blank/NaN, title-cased code for unknown future values.
-
-**Key terminology constraints documented:**
-
-| Concept | Correct label | Prohibited label |
-|---------|--------------|-----------------|
-| Forecast shaded band | Prediction interval | Confidence interval |
-| `insufficient_evidence` | Insufficient evidence (evidence maturity) | Unhealthy / poor model |
-| High concentration | Dependency risk | Misuse |
-| Low engagement | Low engagement (may still be high value) | Low business value |
-| Recommended action | Recommendation (not executed) | Automated action |
-
-**Pure-logic helpers** (no Streamlit dependency, fully testable): `src/app/utils/filter_helpers.py`, `src/app/utils/definitions.py`.
-
-**Tests:** 33 definition tests (`tests/test_definitions.py`), 61 filter tests (`tests/test_filter_helpers.py`).
+```text
+data/          Raw synthetic telemetry (raw/) and processed semantic model (processed/)
+docs/          Methodology references, data dictionaries, privacy policy, architecture notes
+notebooks/     Ten ordered notebooks providing an auditable analytical walkthrough
+outputs/       Generated artifacts (analytics marts, forecasts, insights, diagnostics)
+src/           Python source — analytics, features, models, GenAI, pipelines, Streamlit app
+tests/         Automated test suite covering all major analytical and application components
+```
 
 ---
 
-### Report explorer (Sprint 9 Step 4)
+## Notebook Walkthrough
 
-The **Report Explorer** tab consolidates all report-level detail into a single, ordered view. It replaced the former three separate tabs (Forecast Explorer, Behaviour Insights, AI Insights).
+The notebooks provide an auditable and exploratory walkthrough of the analytical pipeline. Each notebook exercises the same reusable components used by the Python pipeline scripts. Running notebooks in order is one way to reproduce the full output set; the pipeline scripts provide an equivalent command-line path.
 
-**Canonical inputs:**
+| Notebook | Purpose | Main output | Role |
+|---|---|---|---|
+| `01_generate_raw_tables.ipynb` | Generates synthetic report-usage telemetry with trends, seasonality, and noise | `data/raw/*.csv` | Required walkthrough |
+| `02_build_semantic_model_csv.ipynb` | Builds clean dimension and fact tables from raw telemetry | `data/processed/*.csv` | Required walkthrough |
+| `03_validate_semantic_model_hybrid_gx_csv.ipynb` | Validates semantic model completeness, uniqueness, and referential integrity | `outputs/validation/` | Validation |
+| `04_feature_engineering.ipynb` | Constructs the canonical daily-views series, the diagnostic context mart, and supporting feature marts | `data/processed/mart_report_daily_series.csv`, `mart_report_daily_context.csv` | Required walkthrough |
+| `05_forecasting_baseline.ipynb` | Runs rolling-origin backtesting across candidate models and selects the best model per report | `outputs/forecasts/`, `outputs/metrics/` | Required walkthrough |
+| `06_model_diagnostics.ipynb` | Explores bias stability, residual autocorrelation, interval calibration, and the consolidated model-health summary | `outputs/diagnostics/` | Exploratory |
+| `07_report_analytics.ipynb` | Builds report-level behavioural analytics, segmentation, and diagnostics from the processed series | `outputs/segments/`, `outputs/diagnostics/` | Exploratory |
+| `08_user_analytics.ipynb` | Builds user engagement features including lapse cohorts, return rates, and concentration metrics | `outputs/metrics/`, `outputs/segments/` | Exploratory |
+| `09_report_analytics.ipynb` | Assembles the canonical decision-support mart by joining all analytical layers into one report per row | `outputs/analytics/mart_report_analytics.csv` | Required walkthrough |
+| `10_genai_insights.ipynb` | Demonstrates the GenAI insight generation pipeline, validation checks, hash-reuse logic, and evaluation | `outputs/insights/`, `outputs/evaluation/` | Demonstration |
 
-| Source | File | Purpose |
-|--------|------|---------|
-| Canonical mart | `outputs/analytics/mart_report_analytics.csv` | Summary header, all status fields, historical usage, forecast outlook, model health, engagement, decision |
-| Engagement mart | `outputs/analytics/mart_report_engagement.csv` | Supplementary engagement aggregates and suppression flags |
-| Forecast rows | `outputs/forecasts/production_forecasts_latest.csv` (or legacy) | Forecast chart |
-| Report insight | `outputs/insights/report_ai_insights.json` | Report-level GenAI narrative (Sprint 8 schema) |
+---
 
-**Sections rendered (in order):**
+## Getting Started
 
-1. **Summary header** — report name, ID, analytics as-of date, overall status, review priority, recommended action, evidence status.
-2. **Review action banner** — shown only when `recommended_report_action ≠ continue_monitoring`.
-3. **AI summary** — Sprint-8 fields: `executive_summary`, `usage_insight`, `engagement_insight`, `forecast_insight`, `model_confidence_note`, `recommended_action`, `evidence_limitations`. Handles all GenAI states: `valid`, `reused`, `rule_based`, `fallback`, `invalid`, `missing`.
-4. **Historical usage** — recent and previous 28d views, percentage change, usage status, days since last use, zero-usage streak, volatility, anomaly.
-5. **Forecast** — chart with prediction interval (correctly labelled, not a confidence interval), outlook status, uncertainty, forecast vs recent change, horizon, backtest accuracy (MAE/RMSE/WAPE).
-6. **Model health** — diagnostic status, `insufficient_evidence` explained as evidence-maturity not model failure, component diagnostics when available.
-7. **Engagement** — unique users, returning-user share, lapse rate, top-user share, engagement status. Privacy-suppressed fields shown as `Suppressed (privacy)` never as zero. Concentration not described as misuse; low engagement not described as low value.
-8. **Diagnostics and decision** — primary diagnostic, recommended action, pipeline reasons (parseable `key:value | …` format).
-9. **Lineage expander** — analytics run ID, forecast as-of, training cutoff, GenAI run ID, prompt version.
+### Requirements
 
-**Report selector:**
-- Backed by the canonical mart; falls back to legacy sources when mart is absent.
-- One selectable item per `report_id`.
-- Duplicate display names disambiguated by appending the `report_id`.
-- Selector state preserved across reruns.
+- **Python 3.10 or 3.11 recommended** (Python 3.9 minimum; Python 3.12 is compatible).
+- No package installation beyond `pip install -r requirements.txt`.
 
-**Analytical separation:**
-Historical usage, engagement, forecast outlook, model health, and decision support are kept in separate sections. No combined health score is computed or displayed.
+```bash
+python -m venv .venv
+source .venv/bin/activate       # macOS / Linux
+# .venv\Scripts\activate        # Windows
 
-**Pure-logic helpers** (no Streamlit dependency, fully testable): `src/app/utils/report_helpers.py`.
+pip install -r requirements.txt
+```
 
-### Portfolio overview (Sprint 9 Step 3)
+All 134 packages are pinned to exact versions for reproducible installation.
 
-The **Portfolio Overview** tab reads from two canonical outputs:
+### Optional GenAI configuration
 
-| Source | File | Purpose |
-|--------|------|---------|
-| Canonical mart | `outputs/analytics/mart_report_analytics.csv` | Headline metrics, status distributions, attention shortlist |
-| Portfolio insight | `outputs/insights/portfolio_ai_insight.json` | GenAI narrative summaries of the full portfolio |
+Copy the environment template and set your API key if you want live LLM generation:
 
-**Sections rendered:**
+```bash
+cp .env.example .env
+# Edit .env and set: OPENAI_API_KEY=sk-...
+```
 
-1. **Analytics freshness banner** — as-of date and run ID from the mart.
-2. **Headline metrics** — total reports, reports with recent usage, requiring review, high priority, privacy suppressed. Derived from mart status fields; no pipeline logic is reproduced in the UI.
-3. **Portfolio AI summary** — renders the eight narrative fields from `portfolio_ai_insight.json` (`executive_summary`, `portfolio_usage_summary`, `portfolio_engagement_summary`, `portfolio_forecast_summary`, `portfolio_model_health_summary`, `priority_actions`, `positive_signals`, `evidence_limitations`). Handles all six load-status codes gracefully: `ok`, `absent`, `empty`, `malformed_json`, `unexpected_structure`, `validation_failed`.
-4. **Attention shortlist** — up to 5 actionable reports sorted deterministically by priority (critical → high → medium → low) then alphabetically by `report_id`. Reports with `recommended_report_action = continue_monitoring` are excluded. No score is computed.
-5. **Status distributions** — six tables (historical usage, forecast outlook, engagement, review priority, recommended action, model health) in human-readable labels.
-6. **Model health note** — all 30 synthetic mart reports show `insufficient_evidence`. The UI explains this reflects insufficient production run history, not that the models are unhealthy.
-7. **Fallback** — when the mart is absent, legacy portfolio metrics are shown instead.
+The API key is not required to run the application, run the tests, or use the rule-based fallback. Real credentials must never be committed to the repository.
 
-Pure-logic portfolio helpers (no Streamlit dependency) live in `src/app/utils/portfolio_helpers.py` and are fully tested without a Streamlit runtime.
+### Run the pipeline
 
-## Sprint 5: Model Diagnostics
+Synthetic data generation still requires the first four notebooks to be run in order, as the data generation scripts depend on notebook-specific parameter choices. After that, the analytical pipeline can be run from the command line:
 
-Sprint 5 adds a post-selection diagnostic layer that evaluates model health
-**after** the rolling-origin backtesting pipeline has selected a model for each
-report. Diagnostics do not alter model selection; MASE remains the primary
-selection metric.
+```bash
+# Generate synthetic data (run notebooks 01–04 first, or use scripts below)
+python src/data/generate_synthetic_data.py
+python src/data/build_semantic_model.py
+python src/data/validate_model.py
+python -m src.features.build_forecast_features     # if available, else run notebook 04
 
-### Purpose
+# Forecasting and analytics
+python -m src.pipelines.run_forecasting_pipeline
+python -m src.pipelines.run_report_analytics_pipeline
+python -m src.pipelines.run_user_analytics_pipeline
+python -m src.pipelines.run_analytics_mart_pipeline
 
-To answer the question: *given the model that was selected by MASE, how well
-does it behave in practice?*  Diagnostics reveal systematic patterns that
-accuracy metrics alone may miss, such as autocorrelated residuals, directional
-bias, distributional non-normality, and interval miscalibration.
+# GenAI insights (requires OPENAI_API_KEY, or uses rule-based fallback)
+python -m src.genai.insight_generator
+python -m src.genai.portfolio_insights
+```
 
-### Three residual sources
+Each pipeline script writes its outputs to the appropriate `outputs/` subdirectory.
 
-| Source | File | Notes |
-|--------|------|-------|
-| Training residuals | `training_residuals_latest.csv` | In-sample fit; may be optimistic |
-| Backtest forecast errors | `backtest_forecast_errors_latest.csv` | Out-of-sample; primary source |
-| Production forecast errors | `production_forecast_errors_latest.csv` | Realized operational; may be sparse early |
+### Launch Streamlit
 
-All three use `residual = actual - forecast` (positive = underforecast).
-
-### Five diagnostic components
-
-1. **Autocorrelation** — ACF, Ljung-Box, Durbin-Watson on residuals.
-2. **Bias stability** — mean/median/normalized bias per fold and horizon bucket.
-3. **Outlier detection** — MAD robust z-scores, outlier rate, largest miss.
-4. **Distribution shape** — skewness, kurtosis, Jarque-Bera, Shapiro-Wilk.
-5. **Interval calibration** — coverage, coverage gap, Winkler score, lower/upper miss rates.
-
-### Consolidated output
-
-`outputs/diagnostics/report_model_diagnostics_latest.csv` — one row per report.
-
-| Status | Meaning |
-|--------|---------|
-| `healthy` | No component in poor/warning status; sufficient evidence |
-| `watch` | One or more warning-level issues |
-| `poor` | At least one critical issue or multiple poor signals |
-| `insufficient_evidence` | Fewer than 2 valid backtest folds or no production evidence |
-| `calculation_failed` | Diagnostic calculation failed |
-
-### No automatic retraining
-
-`automatic_retraining_triggered` is always `False` in Sprint 5.
-The `consider_retraining` recommended action is a signal for human review only.
-
-### Notebook
-
-`notebooks/06_model_diagnostics.ipynb` — read-only exploration of all 19
-diagnostic output files. Requires the pipeline to have been run first.
-
-See [docs/model_diagnostics_methodology.md](docs/model_diagnostics_methodology.md)
-for methodology details and
-[docs/data_dictionary_sprint5.md](docs/data_dictionary_sprint5.md) for column
-definitions.
-
-## GenAI Insight Layer
-
-Version 0.1 adds a batch-generated report insight layer under `src/genai/`.
-
-Expected inputs:
-
-- `outputs/forecasts/report_forecasts.csv`
-- `outputs/metrics/model_performance.csv`
-- `outputs/segments/report_segments.csv`
-- `outputs/diagnostics/report_diagnostics.csv`
-
-## Streamlit Reviewer App
-
-The demo app reads the generated CSV and JSON outputs directly. It includes an overview page for user adoption, report adoption, at-risk reports, and forecast reliability, plus tabs for forecast exploration, behavioural diagnostics, and AI-generated report insights.
-
-Run from the project root:
+After generating the analytics outputs:
 
 ```bash
 streamlit run src/app/streamlit_app.py
 ```
 
-For compatibility with the current forecasting pipeline, the generator also recognises `report_view_forecasts_latest.csv`, `report_view_metrics_latest.csv`, and `report_model_comparison_latest.csv`.
+The application reads pre-generated files from `outputs/analytics/`, `outputs/forecasts/`, and `outputs/insights/`.
 
-Outputs:
+### Run tests
 
-- `outputs/insights/report_ai_insights.json`
-- `outputs/insights/report_ai_insights.md`
-
-To use an OpenAI model, set `OPENAI_API_KEY` in your environment before running the script. Do not store API keys in the repository. If `OPENAI_API_KEY` is missing, the script generates deterministic rule-based placeholder insights so the notebook and command-line workflow still run.
-
-### Why This Structure?
-
-- Separates raw telemetry-style event data (no fabricated zeros) from derived daily summary tables.
-- Keeps forecasting inputs narrow — only the daily-views series reaches ARIMA.
-- Keeps diagnostic context separate — engagement and performance features are available for
-  segmentation and GenAI summaries but never influence the ARIMA fit.
-- Mirrors a real-world analytics engineering workflow with a clean mart layer boundary.
-- Supports both experimentation and reproducibility.
-
-## Current Status
-
-Implemented:
-
-- Synthetic Power BI-style usage dataset.
-- Semantic model build.
-- Hybrid validation using Great Expectations and pandas checks.
-- Canonical daily report series (`mart_report_daily_series`) with zero-fill for missing active days.
-- Wide diagnostic context mart (`mart_report_daily_context`) with engagement and performance features.
-- Forecasting baseline consuming `mart_report_daily_series` with naive and seasonal-naive comparisons.
-- Data sufficiency gating applied after the complete series is built.
-- Report analytics, user analytics, diagnostics, and segmentation.
-- Batch GenAI insight layer.
-- Lightweight Streamlit reviewer app.
-- Integration tests for the feature-engineering pipeline and forecasting pipeline smoke tests.
-
-Planned next:
-
-- Improve forecast evaluation with rolling-origin backtesting.
-- Add calendar regressors (holidays, known events) as explicitly approved exogenous SARIMAX inputs.
-- Add a stronger model governance table.
-- Add optional open-source forecasting model comparison.
-- Add GenAI output evaluation or prompt quality checks.
-
-## Concurrency and Storage Limitations
-
-The history persistence layer (`append_forecasts_history`, `append_metrics_history`,
-`write_realized_forecast_history`, `migrate_legacy_realized_errors`) uses append-only
-CSV files with a read-check-append-write pattern that is **not transactional**.
-
-| Scope | Status |
-|---|---|
-| Two threads in the same Python process | **Guarded** — `threading.Lock` per file path via `src/persistence/_csv_lock.py` |
-| Two separate OS processes | **Not coordinated** — no cross-process locking |
-| CSV writes | **Not transactional** — partial writes or interleaved appends are possible under concurrent processes |
-
-### What this means in practice
-
-- A single scheduled pipeline run is safe.
-- Running two pipeline instances in parallel (e.g., manual trigger while a scheduled job runs) can produce duplicate or lost rows.
-- CI/CD parallel test workers that write to the same output directory will corrupt history files (tests use `tmp_path` to avoid this).
-
-### Production deployment recommendation
-
-For environments where multiple pipeline processes may run concurrently, replace CSV persistence with one of:
-
-- A transactional relational database (PostgreSQL, SQLite with WAL mode)
-- Delta Lake or Apache Iceberg tables (ACID append semantics)
-- Database upserts keyed on the deduplication key
-- Orchestrator-enforced mutual exclusion (Airflow, Prefect, Dagster, etc.)
-- An explicit cross-process file-locking library (`filelock`, `fcntl.flock`)
-
-## User Analytics Privacy
-
-This project applies privacy-by-design to all user-level analytics outputs.
-
-### Restricted identity layer
-
-`data/processed/dim_user.csv` maps `user_key` to `user_id` (email address) and `unique_user` (display name). This file is **restricted identity data**:
-
-- Must not be joined into any public analytics output.
-- Must not be loaded into the Streamlit app.
-- Must not be used in any GenAI context.
-- Access requires explicit data-governance approval.
-
-### Privacy-safe analytics layer
-
-`outputs/metrics/user_features.csv` and `outputs/segments/user_segments.csv` contain only `user_key` (a stable surrogate key, e.g. `UK_0001`). No email addresses or display names are included.
-
-These files are marked **pseudonymous — user_key only**.
-
-### Small-group suppression
-
-Distribution metrics (e.g. median views per user) are suppressed when `unique_users < 5`. Suppressed values are set to `None` (null), never `0`. The columns `privacy_suppressed`, `privacy_suppression_reason`, and `suppressed_fields` are added to suppressed outputs.
-
-### Streamlit app
-
-The Streamlit reviewer app does not load user-level behavioural files (`user_features.csv`, `user_segments.csv`, `dim_user.csv`). It operates on report-level aggregates only.
-
-### GenAI insight layer
-
-The GenAI layer receives only report-level aggregates. No user identifiers are passed to any LLM prompt.
-
-### Canonical engagement definitions
-
-See `src/analytics/engagement_definitions.py` for the authoritative definitions of all engagement metrics.
-
-Key definitions:
-- **Returning user**: active on at least 2 distinct dates within a window.
-- **One-time user**: active on exactly 1 distinct date within a window.
-- **Repeat-view user**: more than 1 total view within a window (regardless of dates).
-- **Lifetime returned flag**: user has any activity after their first-ever use date.
-
-### Deprecated fields
-
-The following fields are deprecated and must not be used in Sprint 6+ outputs:
-
-| Deprecated field | Replacement |
-|---|---|
-| `repeat_rate` | `returning_user_share_28d` |
-| `is_repeat_user` | `lifetime_returned_flag` |
-| `repeat_usage_flag` | `lifetime_returned_flag` |
-
-## Roadmap
-
-1. Improve forecast evaluation with rolling-origin backtesting.
-2. Add calendar regressors as approved exogenous SARIMAX inputs.
-3. Add a stronger model governance table.
-4. Add optional open-source forecasting model comparison.
-5. Add GenAI output evaluation or prompt quality checks.
-
-
-## Sprint 6 — User Engagement and Adoption Analytics
-
-Sprint 6 adds a complete, privacy-safe user engagement analytics layer. All outputs are
-**report-level** — no individual user data, email addresses, or direct identifiers appear
-in any analytics output file.
-
-### What Sprint 6 produces
-
-**Privacy-safe report-user-day mart** (`mart_report_user_daily`)
-- Pseudonymous user keys only (`user_key`); never joined to `dim_user.csv`
-- One row per (report, user_key, usage_date) with positive usage
-- Includes lifetime history fields (`first_report_use_date`, `lifetime_returned_flag`)
-- Source quality classification applied before mart build
-
-**Complete observation windows**
-- 7-day, 28-day, previous 28-day, 90-day windows anchored to the data as-of date
-- Deterministic window computation from mart max date (not `datetime.now()`)
-- History sufficiency checks gate metric computation per report per window
-
-**Active-user breadth metrics**
-- Unique users per window (7d, 28d, previous 28d, 90d)
-- Active-user direction: growing, stable, declining
-- Returning user share and one-time user share (canonical returning = 2+ distinct dates)
-
-**Engagement cohorts**
-- Newly adopted, retained, reactivated, lapsed, and unclassified recent users
-- Lapse rate over previous cohort denominator; all other shares over recent cohort denominator
-- Requires comparison window sufficiency (both recent and previous 28d covered)
-
-**Frequency and intensity**
-- Views per active user, views per user-day, median active days per user
-- Return-gap analysis (mean and median days between visits for returning users)
-
-**Concentration and HHI**
-- Top-1, top-3, and top-10% user view shares
-- Herfindahl-Hirschman Index (HHI) and effective user count
-- Suppressed for small groups (below `PrivacyConfig.MIN_GROUP_SIZE`)
-
-**Final engagement mart** (`mart_report_engagement`)
-- One row per report with full engagement status classification
-- Priority-ordered status hierarchy (14 possible statuses)
-- Standardised recommended action (no retire/delete recommendations)
-- Plain-language engagement reasons for downstream consumers
-
-### Notebook
-
-Walkthrough of all Sprint 6 analytics:
-```
-notebooks/08_user_analytics.ipynb
+```bash
+pytest
 ```
 
-### No GenAI or Streamlit integration in Sprint 6
-
-Sprint 6 produces CSV outputs only. The GenAI insight layer and Streamlit dashboard
-are planned for a future sprint. `mart_report_engagement` is designed as input for
-those consumers but does not integrate with them yet.
-
-### No report-retirement decisions
-
-No Sprint 6 output recommends retiring, deleting, or restricting access to any report.
-Engagement volume does not determine business value. All recommended actions are limited
-to monitoring, investigation, and data quality review.
-
-### Documentation
-
-| File | Contents |
-|------|----------|
-| `docs/data_dictionary_sprint6.md` | Column-level definitions for all 9 Sprint 6 output files |
-| `docs/user_analytics_methodology.md` | Metric formulas, cohort denominators, suppression policy |
-| `docs/deprecated_fields_sprint6.md` | Deprecated fields and their Sprint 6 replacements |
+The test suite covers data preparation, forecasting, model diagnostics, engagement analytics, GenAI validation, Streamlit helpers, and integration flows. Tests do not make live LLM API calls. A small number of tests are skipped in environments without an API key; all others pass.
 
 ---
 
-## Sprint 7 — Report Analytics and Decision Support
+## Main Outputs
 
-Sprint 7 builds the report analytics layer that combines all prior sprint outputs into
-a canonical decision-support mart for report-level review and action.
-
-### What Sprint 7 builds
-
-Seven analytics layers joined into one mart:
-
-1. **Historical usage context** — 28d/90d trends, inactivity streaks, volatility, anomaly evidence
-2. **Forecast outlook** — 28d horizon direction, uncertainty status, actual vs. forecast comparison
-3. **Model health context** — backtest diagnostics, production evidence maturity, interpretation guidance
-4. **Engagement context** — breadth, repeat, lapse cohorts, frequency, concentration (privacy-gated)
-5. **Metadata context** — explicit dim_report fields only; completeness score; nothing inferred from usage
-6. **Deterministic diagnostics** — 14-step precedence, evidence-gated risk flags, review triggers
-7. **Dimensional segmentation** — 7 independent dimensions + 15-step primary segment precedence
-
-Output: `mart_report_analytics.csv` — one row per report, 305 columns.
-
-### Key design principles
-
-- **Evidence gating:** risk flags are null when evidence is insufficient — not False
-- **No inference from usage:** cadence, criticality, and business value are never inferred from view counts
-- **Deterministic precedence:** primary diagnostic and primary segment follow strict ordered rules
-- **Privacy suppression:** concentration metrics suppressed when unique_users < 5; suppressed values never treated as zero
-- **No prohibited actions:** retire_report, delete_report, automatically_retrain, change_selected_model, restrict_user, and contact_specific_user are never produced
-- **Source-derived dates:** analytics_as_of_date = max(usage_date) from source mart; never date.today()
-
-### Output files
-
-| File | Grain | Rows | Columns |
+| Artifact | Path | Grain | Purpose |
 |---|---|---|---|
-| `outputs/metrics/report_features.csv` | report_id | 30 | 78 |
-| `outputs/analytics/report_forecast_outlook.csv` | report_id | 30 | 74 |
-| `outputs/analytics/report_model_health_context.csv` | report_id | 30 | 34 |
-| `outputs/analytics/report_engagement_context.csv` | report_id | 30 | 54 |
-| `outputs/analytics/report_metadata_context.csv` | report_id | 30 | 40 |
-| `outputs/analytics/report_diagnostics.csv` | report_id | 30 | 47 |
-| `outputs/analytics/report_segments.csv` | report_id | 30 | 16 |
-| `outputs/analytics/mart_report_analytics.csv` | report_id | 30 | 305 |
-
-### Notebook
-
-```
-notebooks/09_report_analytics.ipynb
-```
-
-15 sections: Business Objective, Architecture, Historical Usage, Forecast Outlook, Model Health,
-Engagement, Metadata and Lifecycle, Diagnostics, Segmentation, Canonical Mart, Case Studies,
-Evidence and Privacy Limitations, Action Policy, Relationship to Later Sprints, Limitations.
-
-### Test coverage
-
-| Test file | Tests | Scope |
-|---|---|---|
-| `tests/test_report_analytics_notebook.py` | 30 | Notebook structure, data loading, prohibited content |
-| `tests/test_report_analytics_pipeline_integration.py` | 40+ | File existence, spine preservation, temporal alignment, privacy, prohibited actions, determinism |
-
-### GenAI (Sprint 8) and Streamlit (Sprint 9) not yet modified
-
-Sprint 7 produces CSV outputs only. `mart_report_analytics.csv` is designed as the input for
-Sprint 8 (GenAI narrative generation) and Sprint 9 (Streamlit dashboard), but neither is
-modified in this sprint.
-
-### Documentation
-
-| File | Contents |
-|------|----------|
-| `docs/data_dictionary_sprint7.md` | Column-level definitions for all 8 Sprint 7 output files |
-| `docs/report_analytics_methodology_sprint7.md` | Temporal policy, evidence gating, precedence lists, privacy suppression |
-| `docs/deprecated_fields_sprint7.md` | Deprecated fields and their Sprint 7 replacements |
-
-## Sprint 8 — GenAI Insight Layer
-
-**Design principle:** The analytics layer calculates and decides; the GenAI layer explains.
-This applies at both report level and portfolio level.
-
-### Canonical input
-`outputs/analytics/mart_report_analytics.csv` is the sole analytics source for all GenAI insights
-(report-level and portfolio-level). Deterministic metrics, risk flags, statuses, and actions are
-pre-computed by the Sprint 7 pipeline. The LLM converts them into stakeholder-friendly language —
-it does not recalculate or reclassify. The legacy 4-CSV re-join is no longer used.
+| Canonical analytics mart | `outputs/analytics/mart_report_analytics.csv` | One row per report | Primary input to GenAI and Streamlit |
+| Engagement mart | `outputs/analytics/mart_report_engagement.csv` | One row per report | Privacy-safe engagement status per report |
+| Daily user mart | `outputs/analytics/mart_report_user_daily.csv` | One row per report-date | Source for engagement analytics |
+| Latest forecast | `outputs/forecasts/report_view_forecasts_latest.csv` | One row per report-date in horizon | 28-day ahead forecasts with prediction intervals |
+| Report AI insights | `outputs/insights/report_ai_insights.json` | One record per report | Structured GenAI summaries, validation status, and fallback state |
+| Portfolio AI insight | `outputs/insights/portfolio_ai_insight.json` | Portfolio level | GenAI management summary across all reports |
+| GenAI evaluation summary | `outputs/evaluation/genai_evaluation_summary.json` | Evaluation run | Precision, coverage, and failure-mode counts across evaluation cases |
 
 ---
 
-### Report-level insight flow (`src/genai/insight_generator.py`)
+## Data and Privacy
 
-One structured insight is generated per report from the 34-field allowlist context.
-
-**Context:** `build_mart_context()` extracts `INSIGHT_CONTEXT_ALLOWLIST` fields per row.
-Privacy-suppressed values are passed as `null` with an explicit context note.
-
-**Prompt:** `REPORT_INSIGHT_PROMPT_VERSION = "report_insight_v1"`.
-The LLM returns validated JSON: `executive_summary`, `usage_insight`, `engagement_insight`,
-`forecast_insight`, `model_confidence_note`, `recommended_action`, `evidence_limitations`.
-
-**LLM responsibility:** restate deterministic statuses and actions in clear natural language.
-
-**Deterministic responsibility:** calculate all metrics, choose the recommended action, assign
-review priority, classify status. The LLM receives the completed result, not raw data.
-
-**Canonical output:** `outputs/insights/report_ai_insights.json` (array, one entry per report).
-Optional human-readable: `outputs/insights/report_ai_insights.md`.
+- All data in this repository is **synthetic**. No real organisational Power BI telemetry is included.
+- User-level identifiers are excluded from all GenAI input contexts and are not displayed in the Streamlit application.
+- Engagement metrics for groups below a configurable minimum unique-user threshold are suppressed before output. Suppressed values are never treated as zero or imputed.
+- Concentration metrics (Herfindahl-Hirschman Index, top-user view shares) measure usage dependency, not misuse. High concentration is not interpreted as a policy violation.
+- Review recommendations are advisory outputs for human consideration. No business action — retirement, access change, automated retraining — is executed by this system.
 
 ---
 
-### Portfolio-level insight flow (`src/genai/portfolio_insights.py`)
+## Generated Artifact Policy
 
-One structured management summary is generated for the portfolio as a whole.
+Generated analytics outputs are reproducible pipeline artifacts and are excluded from the repository.
 
-**Aggregates computed deterministically** before any LLM call:
-- Portfolio size and evidence completeness
-- Historical usage distribution (growing / stable / declining / inactive)
-- Forecast outlook distribution and uncertainty levels
-- Model health coverage and common issues
-- Engagement health (active-user breadth, lapse, retention, dependency)
-- Decision support (status, review priority, recommended actions by count)
-- Top risks and positive signals (deterministic summary strings)
-- Attention shortlist (up to 5 reports with non-monitoring actions, ranked by priority then status)
+| Committed to repository | Regenerated and excluded |
+|---|---|
+| Source code (`src/`) | Raw synthetic data (`data/raw/`) |
+| Notebooks (`notebooks/`) | Processed datasets (`data/processed/`) |
+| Tests (`tests/`) | Analytics mart CSVs (`outputs/analytics/`) |
+| Test fixtures (`tests/fixtures/`) | Forecast outputs (`outputs/forecasts/`) |
+| Sample forecast reference (`outputs/forecasts/sample_baseline_forecasts.csv`) | Generated GenAI insight JSON files |
+| Public documentation (`docs/*.md`) | GenAI evaluation run outputs |
+| Environment template (`.env.example`) | Local caches, build artefacts, private preparation documents |
 
-**Context:** a structured dict of portfolio-level aggregates — no user-level data, no individual
-report narratives, no suppressed-field reconstruction. Individual report names appear only in the
-deterministic attention shortlist.
-
-**Prompt:** `PORTFOLIO_INSIGHT_PROMPT_VERSION = "portfolio_insight_v1"`.
-The LLM returns validated JSON: `executive_summary`, `portfolio_usage_summary`,
-`portfolio_engagement_summary`, `portfolio_forecast_summary`, `portfolio_model_health_summary`,
-`priority_actions`, `positive_signals`, `evidence_limitations`.
-
-**LLM responsibility:** synthesise aggregate evidence into a management narrative. The LLM may
-not rank reports, invent causes, name individual users, or recommend automated actions.
-
-**Deterministic responsibility:** calculate every aggregate count and share, build the attention
-shortlist, produce the top-risk and positive-signal strings, assign the deterministic fallback.
-
-**Canonical output:** `outputs/insights/portfolio_ai_insight.json` (single dict).
-Optional human-readable: `outputs/insights/portfolio_ai_insight.md`.
+All excluded artifacts can be recreated by following the pipeline workflow described above.
 
 ---
 
-### Validation and fallback (both levels)
+## Limitations
 
-| Check | Report-level | Portfolio-level |
-|---|---|---|
-| Required schema fields | yes — 7 fields | yes — 8 fields |
-| Prohibited action phrases | yes (retire, delete, retrain, replace model) | yes (same patterns) |
-| User-identifier detection | warning only | warning only |
-| Numerical grounding | ±5 pp / ±5 count tolerance | ±5 pp / ±5 count tolerance |
-| Direction conflict | yes (usage/forecast/engagement) | — |
-| Action category allowlist | — | yes (priority_actions mapped to mart values) |
-| Evidence limitations required | — | yes when model health is insufficient |
-
-A clear contradiction or unsupported material number invalidates the LLM response.
-Both levels fall back to a deterministic rule-based summary in that case, or when the API
-is unavailable or returns invalid JSON. One report failure does not block portfolio generation.
-Portfolio failure does not remove report-level outputs.
-
-### Hash reuse (both levels)
-
-A SHA-256 hash of the sorted context + prompt version + model name is computed before each
-generation. If the hash matches a previous successful output, the output is reused with no API call.
-Failed or invalid prior outputs are never reused. A changed aggregate, prompt version, or model
-triggers regeneration.
-
-### Lineage fields (portfolio)
-
-`analytics_run_id`, `analytics_as_of_date`, `genai_run_id`, `generated_at`,
-`prompt_version`, `model_name`, `input_hash`, `generation_status`, `validation_status`,
-`generation_error`, `report_count`.
-
-### Privacy (both levels)
-
-No user-level data, no individual user identifiers, no event-level records enter any LLM context.
-The portfolio context contains only aggregated counts, shares, and status distributions.
-
-### Current limitations
-
-- Model diagnostic evidence is `insufficient_evidence` for all reports in the current synthetic
-  dataset (production backtests have not been run). Portfolio model-health commentary is therefore
-  limited to acknowledging this gap.
-- Streamlit has not been modified to display portfolio insights (future sprint).
+- **Synthetic source data.** All 30 reports and their usage patterns are programmatically generated. The methodology is realistic, but the outputs are not grounded in real Power BI telemetry.
+- **Limited production forecast history.** The model-health evidence layer requires accumulated production forecast comparisons. With synthetic data over a short window, most reports receive an `insufficient_evidence` model-health status — which is expected and correctly labelled as evidence maturity.
+- **GenAI quality varies.** Output quality depends on the model version, prompt, and context length. The validation layer catches common failure modes but is not exhaustive.
+- **No live enterprise integration.** The project demonstrates production-oriented patterns but does not connect to a live Power BI API, data warehouse, or organisational access-control system.
+- **Stakeholder usefulness testing not completed.** The Streamlit application has not been evaluated with real analytics or reporting stakeholders.
+- **Notebook data-generation step.** Fully automated one-command reproducibility from an empty state is not yet available; notebooks 01–04 provide the synthetic data generation step.
 
 ---
 
-### GenAI Evaluation Framework (`src/genai/evaluation.py`)
+## Tests
 
-**Design principle:** Forecast metrics evaluate the analytical model; groundedness and usefulness
-evaluate the GenAI layer. These are separate concerns.
+The test suite covers:
 
-No LLM-as-judge. All automated evaluation checks are deterministic regex/value matching.
+- **Data preparation** — series construction, zero-fill logic, active-period detection, data-sufficiency validation
+- **Forecasting and backtesting** — candidate evaluation, model selection, fold mechanics, error metrics, production-forecast schema
+- **Model diagnostics** — bias, autocorrelation, interval calibration, evidence-maturity classification
+- **Engagement and privacy** — suppression propagation, suppressed-value handling, concentration metrics, lapse cohorts
+- **Report analytics** — mart assembly, prohibited-action checks, deterministic precedence, evidence gating
+- **GenAI validation and evaluation** — output validation, hallucination guards, fallback state classification, hash-reuse logic, evaluation rubric
+- **Streamlit helpers, loaders, filters, and smoke checks** — load-data integration, filter pipeline, privacy-terminology compliance, chart accessibility
 
-#### Evaluation dimensions
+Tests do not make live LLM API calls. A small number of tests that exercise API-dependent paths are skipped when no key is present.
 
-| Dimension | Type | Description |
-|-----------|------|-------------|
-| Completeness | Hard | All required schema fields present and non-empty |
-| Safety | Hard | No prohibited action phrases (retire, delete, retrain, replace model) |
-| Groundedness | Hard | Directional language AND numerical claims match context |
-| Direction | Hard | Usage/forecast language matches `historical_usage_status` / `forecast_outlook_status` |
-| Numerical | Hard | % and count claims within ±5 pp / ±5 of context values |
-| Action alignment | Hard | Generated action aligns with deterministic `recommended_report_action` |
-| Evidence disclosure | Hard | Model insufficiency, privacy suppression, forecast uncertainty disclosed when present |
-| Readability | Soft (0–1) | Heuristic field-length and generic-phrase check; threshold ≥ 0.5 for overall pass |
-| Conciseness | Soft (0–1) | Average word-count ratio vs. per-field limits; informational only |
+---
 
-**Overall pass rule:** all 7 hard dimensions True AND readability_score ≥ 0.5.
-The automated pass gate is necessary but not sufficient for stakeholder usefulness —
-human review (`docs/genai_evaluation_rubric.md`) is the authoritative quality signal.
+## License
 
-#### Fixture-based evaluation set
-
-`tests/fixtures/genai_evaluation_cases.json` — 15 report-level + 8 portfolio-level labelled cases:
-
-- 12 report cases expected to **pass** (growing, declining, stable, inactive, privacy-suppressed,
-  high-uncertainty, insufficient model health, missing metadata, conflicting signals, etc.)
-- 3 report cases expected to **fail** (retirement language, hallucinated number, incorrect direction)
-- 5 portfolio cases expected to **pass** (stable, elevated decline, high uncertainty, all-insufficient model evidence, partial privacy suppression)
-- 3 portfolio cases expected to **pass** (shortlist capped, missing metadata, valid fallback)
-
-Tests in `tests/test_genai_evaluation.py` run all fixture cases through the deterministic
-evaluators and assert that the actual outcome matches `expected_validation_outcome`.
-
-#### Golden regression testing
-
-`tests/fixtures/genai_golden_outputs.json` — 10 golden configs (concept-level expectations only,
-no exact text). Each config defines `required_concepts`, `prohibited_concepts`, `schema_fields`,
-`evidence_limitations_keywords`, and (for report-level) `expected_action_keywords`. Used by
-`compare_against_golden()` to verify that a regenerated insight preserves key semantic properties
-after a prompt or model version change.
-
-Two golden configs mark expected-fail cases (retirement language, hallucinated number) — used to
-confirm the safety and numerical checks still catch those cases after any code change.
-
-#### Regression against stored outputs
-
-```python
-from src.genai.evaluation import run_regression_against_stored_outputs
-summary = run_regression_against_stored_outputs()
-```
-
-Loads `outputs/analytics/mart_report_analytics.csv`, `outputs/insights/report_ai_insights.json`,
-and `outputs/insights/portfolio_ai_insight.json`. Evaluates every stored insight against its
-mart context and writes timestamped results to `outputs/evaluation/`.
-
-**Note on current stored outputs:** in this environment no API key is configured, so all stored
-outputs are rule-based fallbacks. Rule-based evaluation confirms that the deterministic fallback
-path produces valid, grounded, safe outputs. It does not validate the live LLM generation path.
-LLM evaluation requires a separate run with `generation_status='success'` entries.
-
-#### Human-review rubric
-
-`docs/genai_evaluation_rubric.md` defines a 7-dimension 1–5 scoring rubric covering:
-Factual Groundedness, Evidence Disclosure, Action Alignment, Readability, Conciseness,
-Safety and Boundary Respect, and Stakeholder Usefulness. The rubric is used for periodic
-human review and cannot be replaced by automated checks.
-
-Recommended cadence: full rubric review on every prompt version change or model version change;
-quarterly spot-check of 10 insights otherwise.
+MIT License — see [LICENSE](LICENSE).
