@@ -311,6 +311,27 @@ Production forecast outputs use `forecast_date`; legacy outputs use `Date`. `nor
 
 Engagement fields that cannot be shown due to small user populations are displayed as **Suppressed (privacy)** — they are never shown as zero. The `privacy_suppression_status`, `*_privacy_suppressed`, and `privacy_suppressed_fields` columns in the engagement mart control this behaviour.
 
+### Portfolio overview (Sprint 9 Step 3)
+
+The **Portfolio Overview** tab reads from two canonical outputs:
+
+| Source | File | Purpose |
+|--------|------|---------|
+| Canonical mart | `outputs/analytics/mart_report_analytics.csv` | Headline metrics, status distributions, attention shortlist |
+| Portfolio insight | `outputs/insights/portfolio_ai_insight.json` | GenAI narrative summaries of the full portfolio |
+
+**Sections rendered:**
+
+1. **Analytics freshness banner** — as-of date and run ID from the mart.
+2. **Headline metrics** — total reports, reports with recent usage, requiring review, high priority, privacy suppressed. Derived from mart status fields; no pipeline logic is reproduced in the UI.
+3. **Portfolio AI summary** — renders the eight narrative fields from `portfolio_ai_insight.json` (`executive_summary`, `portfolio_usage_summary`, `portfolio_engagement_summary`, `portfolio_forecast_summary`, `portfolio_model_health_summary`, `priority_actions`, `positive_signals`, `evidence_limitations`). Handles all six load-status codes gracefully: `ok`, `absent`, `empty`, `malformed_json`, `unexpected_structure`, `validation_failed`.
+4. **Attention shortlist** — up to 5 actionable reports sorted deterministically by priority (critical → high → medium → low) then alphabetically by `report_id`. Reports with `recommended_report_action = continue_monitoring` are excluded. No score is computed.
+5. **Status distributions** — six tables (historical usage, forecast outlook, engagement, review priority, recommended action, model health) in human-readable labels.
+6. **Model health note** — all 30 synthetic mart reports show `insufficient_evidence`. The UI explains this reflects insufficient production run history, not that the models are unhealthy.
+7. **Fallback** — when the mart is absent, legacy portfolio metrics are shown instead.
+
+Pure-logic portfolio helpers (no Streamlit dependency) live in `src/app/utils/portfolio_helpers.py` and are fully tested without a Streamlit runtime.
+
 ## Sprint 5: Model Diagnostics
 
 Sprint 5 adds a post-selection diagnostic layer that evaluates model health

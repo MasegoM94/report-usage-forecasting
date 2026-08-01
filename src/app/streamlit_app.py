@@ -25,6 +25,13 @@ from utils.load_data import (
     load_app_data,
     row_for_report,
 )
+from utils.portfolio_helpers import (
+    attention_shortlist as _attention_shortlist,
+    distribution_table as _distribution_table,
+    portfolio_headline_metrics as _portfolio_headline_metrics,
+    status_label as _status_label,
+    STATUS_ORDER as _STATUS_ORDER,
+)
 
 
 st.set_page_config(
@@ -299,158 +306,279 @@ def diagnostics_flags(row: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _mart_report_counts(mart: "pd.DataFrame") -> dict[str, Any]:
-    """Derive simple report counts from the canonical mart when it is available.
+# ---------------------------------------------------------------------------
+# Portfolio GenAI section helpers (pure-logic helpers imported from portfolio_helpers)
+# ---------------------------------------------------------------------------
 
-    Returns a dict with total / active / action counts or None values when the
-    mart is empty or missing the required columns.  All calculations are simple
-    row counts and category distributions — no threshold logic is duplicated here.
-    """
-    if mart.empty or "report_id" not in mart.columns:
-        return {}
-    total = int(mart["report_id"].nunique())
-    out: dict[str, Any] = {"total_reports": total}
-    if "overall_report_status" in mart.columns:
-        status_counts = mart["overall_report_status"].value_counts().to_dict()
-        out["status_counts"] = status_counts
-    if "overall_review_priority" in mart.columns:
-        priority_counts = mart["overall_review_priority"].value_counts().to_dict()
-        out["priority_counts"] = priority_counts
-        # Reports flagged as high or critical review priority
-        high_priority = mart[
-            mart["overall_review_priority"].isin({"high", "critical"})
-        ]
-        out["high_priority_count"] = len(high_priority)
-    if "recommended_report_action" in mart.columns:
-        action_counts = mart["recommended_report_action"].value_counts().to_dict()
-        out["action_counts"] = action_counts
-    if "forecast_outlook_status" in mart.columns:
-        out["forecast_outlook_counts"] = mart["forecast_outlook_status"].value_counts().to_dict()
-    if "analytics_run_id" in mart.columns and not mart.empty:
-        out["analytics_run_id"] = mart["analytics_run_id"].iloc[0]
-    if "analytics_as_of_date" in mart.columns and not mart.empty:
-        out["analytics_as_of_date"] = mart["analytics_as_of_date"].iloc[0]
-    return out
+def _render_portfolio_genai(insight: dict[str, Any], status: str) -> None:
+    """Render the persisted portfolio AI insight section."""
+    st.subheader("Portfolio AI Summary")
 
+    generation_status = insight.get("generation_status", "")
+    validation_status = insight.get("validation_status", "")
 
-def render_overview(data: dict[str, pd.DataFrame]) -> None:
-    st.header("Overview")
-    analysis_period = get_dashboard_analysis_period(data)
-    mart = data.get("report_analytics", pd.DataFrame())
-    mart_counts = _mart_report_counts(mart)
-    user_adoption = calculate_user_adoption_metrics(data)
-    report_adoption = calculate_report_adoption_metrics(data)
-    reliability = calculate_forecast_reliability_summary(data)
-    at_risk_reports = get_at_risk_reports(data)
-
-    at_risk_help = (
-        "Reports at risk are reports showing signs of declining usage, weak repeat engagement, "
-        "high reliance on a small group of users, performance issues, or unreliable forecasting "
-        "patterns."
-    )
-    reliability_help = (
-        "Forecast reliability shows the share of report forecasts that passed the project's "
-        "quality checks. It does not mean the model is that percentage accurate."
-    )
-
-    st.subheader("User Adoption")
-    user_cols = st.columns(3)
-    metric_with_help(
-        user_cols[0],
-        "Total Users",
-        fmt_number(user_adoption.get("total_users")),
-        "The number of users available in the usage dataset.",
-    )
-    metric_with_help(
-        user_cols[1],
-        "Active Users",
-        fmt_number(user_adoption.get("active_users")),
-        "The number of users who viewed at least one report during the analysis period.",
-    )
-    metric_with_help(
-        user_cols[2],
-        "Active User Rate",
-        fmt_percent(user_adoption.get("active_user_rate")),
-        "The percentage of available users who actively viewed at least one report.",
-    )
-
-    st.subheader("Report Adoption")
-    # Prefer mart-derived counts when the canonical mart is loaded.
-    mart_total = mart_counts.get("total_reports")
-    display_total = mart_total if mart_total is not None else report_adoption.get("total_reports")
-    report_cols = st.columns(3)
-    metric_with_help(
-        report_cols[0],
-        "Total Reports",
-        fmt_number(display_total),
-        "The number of reports in the canonical analytics mart.",
-    )
-    metric_with_help(
-        report_cols[1],
-        "Used Reports",
-        fmt_number(report_adoption.get("used_reports")),
-        "The number of reports that received at least one view during the analysis period.",
-    )
-    metric_with_help(
-        report_cols[2],
-        "Report Usage Rate",
-        fmt_percent(report_adoption.get("report_usage_rate")),
-        "The percentage of available reports that were viewed at least once.",
-    )
-
-    # Analytics freshness — show run ID and as-of date when the mart is loaded
-    if mart_counts.get("analytics_as_of_date"):
-        st.caption(
-            f"Analytics as of: **{mart_counts['analytics_as_of_date']}** "
-            f"(run: {mart_counts.get('analytics_run_id', 'unknown')})"
-        )
-
-    st.subheader("Monitoring")
-    monitoring_cols = st.columns(2)
-    metric_with_help(
-        monitoring_cols[0],
-        "Reports At Risk",
-        fmt_number(len(at_risk_reports)),
-        at_risk_help,
-    )
-    metric_with_help(
-        monitoring_cols[1],
-        "Forecast Reliability",
-        fmt_percent(reliability.get("reliable_pct")),
-        reliability_help,
-    )
-
-    warnings = (
-        analysis_period.get("warnings", [])
-        + user_adoption.get("warnings", [])
-        + report_adoption.get("warnings", [])
-        + reliability.get("warnings", [])
-    )
-    if warnings:
-        with st.expander("Overview metric assumptions"):
-            for warning in warnings:
-                st.caption(warning)
-
-    st.subheader("Reports to investigate")
-    if at_risk_reports.empty:
-        st.success("No at-risk reports were flagged in the available analytics outputs.")
+    if status == "absent":
+        st.info("No portfolio AI summary is available. Run the GenAI pipeline to generate one.")
         return
 
-    display = at_risk_reports.rename(
-        columns={
-            "report_name": "Report Name",
-            "segment_or_health_status": "Segment / Status",
-            "diagnostic": "Diagnostic Summary",
-            "forecast_reliability": "Forecast Reliability",
+    if status == "empty":
+        st.info("The portfolio AI summary file is empty.")
+        return
+
+    if status in ("malformed_json", "unexpected_structure"):
+        st.warning("The portfolio AI summary file could not be read. The file may be corrupted.")
+        return
+
+    if status == "validation_failed":
+        st.warning(
+            "The portfolio AI summary did not pass validation checks. "
+            "The narrative below may not be reliable — review the pipeline output."
+        )
+
+    # Generation-status label shown at the top of the section
+    if generation_status == "rule_based":
+        st.caption(
+            "ℹ️ This summary was produced by the deterministic rule-based fallback — "
+            "not by a live language model. It reflects validated portfolio aggregates."
+        )
+    elif generation_status in ("fallback_schema_invalid", "fallback_api_error"):
+        st.caption(
+            "⚠️ The AI model call failed. This is a fallback summary based on validated aggregates."
+        )
+
+    # Narrative sections
+    executive = insight.get("executive_summary")
+    if executive:
+        st.markdown(f"**{executive}**")
+
+    col_left, col_right = st.columns(2)
+    with col_left:
+        _render_insight_section("Usage", insight.get("portfolio_usage_summary"))
+        _render_insight_section("Forecast", insight.get("portfolio_forecast_summary"))
+        _render_insight_section("Model health", insight.get("portfolio_model_health_summary"))
+    with col_right:
+        _render_insight_section("Engagement", insight.get("portfolio_engagement_summary"))
+        _render_list_section("Priority actions", insight.get("priority_actions"))
+        _render_list_section("Positive signals", insight.get("positive_signals"))
+
+    limitations = insight.get("evidence_limitations")
+    if limitations:
+        with st.expander("Evidence limitations"):
+            if isinstance(limitations, list):
+                for item in limitations:
+                    st.markdown(f"- {item}")
+            else:
+                st.write(limitations)
+
+    # Lineage metadata in an expander
+    with st.expander("Summary metadata"):
+        meta_cols = st.columns(2)
+        meta = {
+            "Analytics as of":   insight.get("analytics_as_of_date"),
+            "Report count":      insight.get("report_count"),
+            "Generation status": generation_status,
+            "Validation status": validation_status,
+            "Prompt version":    insight.get("prompt_version"),
+            "Model":             insight.get("model_name"),
+            "Generated at":      str(insight.get("generated_at", ""))[:19],
         }
+        items = list(meta.items())
+        for i, (label, value) in enumerate(items):
+            meta_cols[i % 2].caption(f"**{label}:** {value or '—'}")
+
+
+def _render_insight_section(label: str, value: Any) -> None:
+    if value:
+        st.markdown(f"**{label}**")
+        st.write(value)
+
+
+def _render_list_section(label: str, value: Any) -> None:
+    if not value:
+        return
+    st.markdown(f"**{label}**")
+    if isinstance(value, list):
+        for item in value:
+            st.markdown(f"- {item}")
+    else:
+        st.write(value)
+
+
+# ---------------------------------------------------------------------------
+# Overview render
+# ---------------------------------------------------------------------------
+
+def render_overview(data: dict[str, pd.DataFrame]) -> None:
+    st.header("Portfolio Overview")
+    mart = data.get("report_analytics", pd.DataFrame())
+    metrics = _portfolio_headline_metrics(mart)
+    as_of = metrics.get("analytics_as_of_date")
+
+    # --- Data freshness banner ---
+    if as_of:
+        st.caption(
+            f"Analytics as of **{as_of}** · "
+            f"Run: `{metrics.get('analytics_run_id', '—')}`"
+        )
+    elif mart.empty:
+        st.warning(
+            "The canonical analytics mart (`outputs/analytics/mart_report_analytics.csv`) "
+            "was not found. Headline metrics are unavailable. Run the analytics pipeline first."
+        )
+
+    # ── 1. Headline metrics ────────────────────────────────────────────────
+    total = metrics.get("total_reports")
+    with_usage = metrics.get("with_recent_usage")
+    requiring = metrics.get("requiring_review")
+    high_pri = metrics.get("high_priority")
+    suppressed = metrics.get("privacy_suppressed")
+
+    h_cols = st.columns(5)
+    metric_with_help(
+        h_cols[0], "Total reports", fmt_number(total),
+        "Number of unique reports in the analytics mart.",
     )
-    visible_columns = [
-        "Report Name",
-        "Segment / Status",
-        "Diagnostic Summary",
-        "Forecast Reliability",
-    ]
-    st.dataframe(display[visible_columns], hide_index=True, width="stretch")
+    metric_with_help(
+        h_cols[1], "Recent usage", fmt_number(with_usage),
+        "Reports with at least one view in the last 28 days "
+        f"(out of {fmt_number(total)} total).",
+    )
+    metric_with_help(
+        h_cols[2], "Requiring review",
+        fmt_number(requiring),
+        "Reports with a recommended action other than 'continue monitoring'. "
+        "Based on the deterministic recommended_report_action field from the mart.",
+    )
+    metric_with_help(
+        h_cols[3], "High priority",
+        fmt_number(high_pri),
+        "Reports where overall_review_priority is high or critical.",
+    )
+    metric_with_help(
+        h_cols[4], "Privacy suppressed",
+        fmt_number(suppressed),
+        "Reports where at least one engagement metric is suppressed for privacy. "
+        "Suppressed fields are not shown as zero.",
+    )
+
+    st.divider()
+
+    # ── 2. Portfolio AI summary ────────────────────────────────────────────
+    portfolio_insight: dict[str, Any] = data.get("_portfolio_insight", {})  # type: ignore[assignment]
+    portfolio_status: str = data.get("_portfolio_insight_status", "absent")  # type: ignore[assignment]
+    _render_portfolio_genai(portfolio_insight, portfolio_status)
+
+    st.divider()
+
+    # ── 3. Attention shortlist ─────────────────────────────────────────────
+    st.subheader("Attention shortlist")
+    shortlist = _attention_shortlist(mart)
+    total_actionable = (
+        int((mart["recommended_report_action"] != "continue_monitoring").sum())
+        if not mart.empty and "recommended_report_action" in mart.columns
+        else None
+    )
+
+    if shortlist.empty:
+        if mart.empty:
+            st.info("No mart data available to build the shortlist.")
+        else:
+            st.success("No reports require action — all are on 'continue monitoring'.")
+    else:
+        cap = len(shortlist)
+        note = (
+            f"Showing {cap} of {total_actionable} reports requiring action."
+            if total_actionable and total_actionable > cap
+            else f"Showing all {cap} report(s) requiring action."
+        )
+        st.caption(note + " This is a capped deterministic shortlist, not the full action queue.")
+
+        # Friendly column names for display
+        rename_map = {
+            "report_name":              "Report",
+            "overall_review_priority":  "Priority",
+            "overall_report_status":    "Status",
+            "primary_diagnostic":       "Primary diagnostic",
+            "recommended_report_action":"Recommended action",
+            "overall_evidence_status":  "Evidence",
+        }
+        display_cols = [c for c in rename_map if c in shortlist.columns]
+        display_df = shortlist[display_cols].rename(columns=rename_map)
+        # Apply human-readable labels to coded columns
+        for src_col, display_col in rename_map.items():
+            if display_col in display_df.columns and src_col in (
+                "overall_review_priority", "overall_report_status",
+                "recommended_report_action",
+            ):
+                display_df[display_col] = display_df[display_col].map(_status_label)
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ── 4. Status distributions ────────────────────────────────────────────
+    if not mart.empty:
+        st.subheader("Portfolio distributions")
+
+        dist_configs = [
+            ("Historical usage", "historical_usage_status"),
+            ("Forecast outlook", "forecast_outlook_status"),
+            ("Engagement",       "overall_engagement_status"),
+            ("Review priority",  "overall_review_priority"),
+            ("Recommended action", "recommended_report_action"),
+        ]
+
+        row1_cols = st.columns(3)
+        row2_cols = st.columns(2)
+        all_cols = row1_cols + row2_cols
+
+        for i, (label, field) in enumerate(dist_configs):
+            order = _STATUS_ORDER.get(field)
+            df_dist = _distribution_table(mart, field, order)
+            with all_cols[i]:
+                st.markdown(f"**{label}**")
+                if df_dist.empty:
+                    st.caption(f"'{field}' not available in mart.")
+                else:
+                    st.dataframe(df_dist, hide_index=True, use_container_width=True)
+
+        # Model health — shown separately with an evidence-limitation note
+        st.markdown("**Model health**")
+        mh_dist = _distribution_table(
+            mart, "model_diagnostic_status",
+            _STATUS_ORDER.get("model_diagnostic_status"),
+        )
+        if mh_dist.empty:
+            st.caption("'model_diagnostic_status' not available in mart.")
+        else:
+            st.dataframe(mh_dist, hide_index=True, use_container_width=True)
+            insuff_count = int(
+                (mart.get("model_diagnostic_status", pd.Series()) == "insufficient_evidence").sum()
+            ) if "model_diagnostic_status" in mart.columns else 0
+            if insuff_count > 0:
+                st.caption(
+                    f"ℹ️ {insuff_count} report(s) show 'Insufficient evidence' — this means the "
+                    "model has not yet accumulated enough production run history to assess health. "
+                    "It does not mean the model is unhealthy."
+                )
+    else:
+        st.info("Status distributions are unavailable — mart not loaded.")
+
+    # ── 5. Legacy metric fallback (shown only when mart is missing) ─────────
+    if mart.empty:
+        st.subheader("Fallback metrics (legacy sources)")
+        user_adoption = calculate_user_adoption_metrics(data)
+        report_adoption = calculate_report_adoption_metrics(data)
+        reliability = calculate_forecast_reliability_summary(data)
+        leg_cols = st.columns(4)
+        metric_with_help(leg_cols[0], "Total Users", fmt_number(user_adoption.get("total_users")),
+                         "From usage dataset.")
+        metric_with_help(leg_cols[1], "Active Users", fmt_number(user_adoption.get("active_users")),
+                         "Users who viewed ≥1 report.")
+        metric_with_help(leg_cols[2], "Total Reports (est.)",
+                         fmt_number(report_adoption.get("total_reports")), "From report catalogue.")
+        metric_with_help(leg_cols[3], "Forecast Reliability",
+                         fmt_percent(reliability.get("reliable_pct")),
+                         "Share of reports with reliable forecasts.")
 
 
 def render_forecast_explorer(

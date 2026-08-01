@@ -78,6 +78,9 @@ OUTPUT_PATHS = {
     "report_analytics": Path("outputs/analytics/mart_report_analytics.csv"),
     # Engagement mart — report-level aggregates only, no user identifiers.
     "engagement": Path("outputs/analytics/mart_report_engagement.csv"),
+    # Portfolio-level GenAI insight (single JSON object, not a list).
+    # Loaded separately in load_portfolio_insight() — not via OUTPUT_PATHS —
+    # because it is a single dict, not a records list.
 }
 
 # Monitoring files written by the production pipeline.  Keyed by the logical
@@ -415,6 +418,130 @@ def validate_report_features_schema(df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Portfolio insight loader
+# ---------------------------------------------------------------------------
+
+# Narrative fields expected in a Sprint 8 portfolio insight.
+# Their absence is handled gracefully — each field falls back to None.
+PORTFOLIO_NARRATIVE_FIELDS: tuple[str, ...] = (
+    "executive_summary",
+    "portfolio_usage_summary",
+    "portfolio_engagement_summary",
+    "portfolio_forecast_summary",
+    "portfolio_model_health_summary",
+    "priority_actions",
+    "positive_signals",
+    "evidence_limitations",
+)
+
+# Lineage fields used for display metadata.
+PORTFOLIO_LINEAGE_FIELDS: tuple[str, ...] = (
+    "analytics_run_id",
+    "analytics_as_of_date",
+    "report_count",
+    "generation_status",
+    "generation_mode",
+    "validation_status",
+    "prompt_version",
+    "model_name",
+    "generated_at",
+    "genai_run_id",
+)
+
+_PORTFOLIO_INSIGHT_PATH = Path("outputs/insights/portfolio_ai_insight.json")
+
+# Load-state codes returned by load_portfolio_insight()
+PortfolioInsightStatus = Literal[
+    "ok",
+    "absent",
+    "empty",
+    "malformed_json",
+    "unexpected_structure",
+    "validation_failed",
+]
+
+
+def load_portfolio_insight(
+    root: Path | None = None,
+) -> tuple[dict[str, Any], "PortfolioInsightStatus"]:
+    """Read the persisted portfolio GenAI insight.
+
+    Returns ``(payload, status)`` where ``payload`` is the raw dict (possibly
+    empty) and ``status`` is one of the PortfolioInsightStatus literals.
+
+    Status semantics:
+
+    ``"ok"``                   — file present, valid JSON dict, validation_status == "valid"
+    ``"absent"``               — file does not exist
+    ``"empty"``                — file exists but is empty or whitespace-only
+    ``"malformed_json"``       — file exists but cannot be parsed as JSON
+    ``"unexpected_structure"`` — valid JSON but not a dict (e.g. a list)
+    ``"validation_failed"``    — dict loaded but validation_status != "valid"
+
+    The caller is responsible for displaying appropriate warnings for each state.
+    An ``"ok"`` status does not guarantee all narrative fields are populated —
+    treat each field independently with a None fallback.
+    """
+    base = root or project_root()
+    path = base / _PORTFOLIO_INSIGHT_PATH
+
+    if not path.exists():
+        return {}, "absent"
+
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return {}, "malformed_json"
+
+    if not raw:
+        return {}, "empty"
+
+    try:
+        payload: Any = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}, "malformed_json"
+
+    if not isinstance(payload, dict):
+        return {}, "unexpected_structure"
+
+    validation_status = payload.get("validation_status", "")
+    if validation_status not in ("valid", ""):
+        return payload, "validation_failed"
+
+    return payload, "ok"
+
+
+# ---------------------------------------------------------------------------
+# Portfolio overview data contract — mart fields
+# ---------------------------------------------------------------------------
+
+# Fields required for the portfolio overview headline metrics.
+# Missing fields degrade to "N/A" display — they do not crash the app.
+PORTFOLIO_MART_FIELDS: dict[str, str] = {
+    "report_id":               "Report identity",
+    "report_name":             "Report display name",
+    "analytics_run_id":        "Analytics run lineage",
+    "analytics_as_of_date":    "Data freshness date",
+    "historical_usage_status": "Usage trend classification",
+    "forecast_outlook_status": "Forecast direction classification",
+    "overall_engagement_status": "Engagement health classification",
+    "model_diagnostic_status": "Model health classification",
+    "overall_report_status":   "Combined report health",
+    "overall_evidence_status": "Evidence completeness",
+    "overall_review_priority": "Review urgency",
+    "recommended_report_action": "Deterministic action recommendation",
+    "primary_diagnostic":      "Primary diagnostic finding",
+    "privacy_suppression_status": "Privacy suppression flag",
+    "recent_28d_views":        "Recent usage volume",
+}
+
+
+def validate_portfolio_mart_fields(mart: pd.DataFrame) -> dict[str, bool]:
+    """Return a dict of field → present for all portfolio contract fields."""
+    return {field: field in mart.columns for field in PORTFOLIO_MART_FIELDS}
+
+
+# ---------------------------------------------------------------------------
 # Canonical report analytics mart validation
 # ---------------------------------------------------------------------------
 
@@ -537,6 +664,13 @@ def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
     # Ensure all forecast DataFrames expose the canonical "Date" column.
     # Production files use "forecast_date"; legacy files use "Date".
     data["forecasts"] = normalize_forecast_date(data.get("forecasts", pd.DataFrame()))
+
+    # Load the portfolio GenAI insight (single dict, not a records list).
+    portfolio_payload, portfolio_status = load_portfolio_insight(base)
+    # Store the raw dict and the load status separately so render functions
+    # can make appropriate display decisions without re-loading the file.
+    data["_portfolio_insight"] = portfolio_payload  # type: ignore[assignment]
+    data["_portfolio_insight_status"] = portfolio_status  # type: ignore[assignment]
 
     return data
 
