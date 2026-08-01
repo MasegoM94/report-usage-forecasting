@@ -44,6 +44,18 @@ from utils.report_helpers import (
     report_display_name as _report_display_name,
     suppression_aware_metric,
 )
+from utils.definitions import DEFINITIONS, status_label as _def_status_label
+from utils.filter_helpers import (
+    FILTERABLE_FIELDS,
+    active_filter_summary,
+    apply_attention_filter,
+    apply_filters,
+    check_filter_availability,
+    default_filter_state,
+    extract_filter_options,
+    safe_session_report,
+    search_reports,
+)
 
 
 st.set_page_config(
@@ -417,21 +429,209 @@ def _render_list_section(label: str, value: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sidebar — search, filters, report selector
+# ---------------------------------------------------------------------------
+
+# Session-state key prefix for all filter widgets.
+# Incrementing _SF_V forces Streamlit to recreate the widgets (clear effect).
+_SF_PFX = "sf_"
+
+
+def _sf_key(name: str) -> str:
+    """Sidebar filter key using the current filter version."""
+    v = st.session_state.get("_sf_v", 0)
+    return f"{_SF_PFX}{name}_{v}"
+
+
+def _clear_sidebar_filters() -> None:
+    """Increment the filter version so all filter widgets reset on next rerun."""
+    st.session_state["_sf_v"] = st.session_state.get("_sf_v", 0) + 1
+
+
+def render_sidebar(
+    data: dict[str, pd.DataFrame],
+    reports: pd.DataFrame,
+) -> dict[str, Any]:
+    """Render the full sidebar and return the selection state.
+
+    Returns a dict with keys:
+        report_id          — currently selected report_id (str or None)
+        filtered_mart      — mart filtered by active portfolio filters
+        selectable_reports — DataFrame of reports visible after search+filter
+        active_filters     — dict of {field: [values]}
+        search_query       — current search string
+        attention_only     — bool
+        total_count        — total reports in mart before filtering
+        filtered_count     — reports after filters (before search)
+    """
+    mart = data.get("report_analytics", pd.DataFrame())
+    total_count = len(mart) if not mart.empty else 0
+
+    # ── Search ────────────────────────────────────────────────────────────
+    st.sidebar.markdown("**Find a report**")
+    search_query: str = st.sidebar.text_input(
+        "Search by name or ID",
+        key=_sf_key("search"),
+        placeholder="Type to filter…",
+        label_visibility="collapsed",
+    )
+
+    # ── Portfolio filters ─────────────────────────────────────────────────
+    availability = check_filter_availability(mart)
+    active_filters: dict[str, list[str]] = {}
+
+    usable_fields = [
+        (field, label)
+        for field, label in FILTERABLE_FIELDS
+        if availability.get(field, False)
+    ]
+
+    if usable_fields:
+        with st.sidebar.expander("Portfolio filters", expanded=False):
+            for field, label in usable_fields:
+                options_pairs = extract_filter_options(mart, field)
+                if len(options_pairs) < 2:
+                    continue
+                raw_values = [v for _, v in options_pairs]
+                selected = st.multiselect(
+                    label,
+                    options=raw_values,
+                    format_func=_status_label,
+                    key=_sf_key(field),
+                    default=[],
+                )
+                if selected:
+                    active_filters[field] = selected
+
+    # ── Display controls ─────────────────────────────────────────────────
+    attention_only: bool = st.sidebar.checkbox(
+        "Show only reports requiring attention",
+        key=_sf_key("attention"),
+        value=False,
+        help=(
+            "Requires attention: review priority is high or critical, "
+            "or recommended action is not 'continue monitoring'.\n\n"
+            + DEFINITIONS["review_priority"]
+        ),
+    )
+
+    any_active = bool(active_filters) or bool(search_query.strip()) or attention_only
+    if any_active:
+        if st.sidebar.button("Clear all filters", key="sf_clear"):
+            _clear_sidebar_filters()
+            st.rerun()
+
+    # ── Apply portfolio filters ───────────────────────────────────────────
+    filtered_mart = apply_filters(mart, active_filters)
+    if attention_only:
+        filtered_mart = apply_attention_filter(filtered_mart)
+
+    filtered_count = len(filtered_mart)
+
+    # ── Build selectable report list ──────────────────────────────────────
+    if not filtered_mart.empty and "report_id" in filtered_mart.columns:
+        filtered_ids = set(filtered_mart["report_id"].tolist())
+        selectable = reports[reports["report_id"].isin(filtered_ids)].copy()
+    else:
+        selectable = reports.iloc[:0].copy()
+
+    # Apply text search
+    if search_query.strip():
+        selectable = search_reports(selectable, search_query.strip())
+
+    # ── Filter context caption ────────────────────────────────────────────
+    if not mart.empty:
+        n_sel = len(selectable)
+        if any_active or n_sel < total_count:
+            st.sidebar.caption(f"Showing {n_sel} of {total_count} reports")
+        else:
+            st.sidebar.caption(f"All {total_count} reports shown")
+
+    # ── Report selector ───────────────────────────────────────────────────
+    st.sidebar.divider()
+
+    if selectable.empty:
+        st.sidebar.warning(
+            "No reports match the current search or filters. "
+            "Clear filters to restore the full list."
+        )
+        report_id = None
+    else:
+        current_id = st.session_state.get("selected_report_id")
+        report_id = safe_session_report(selectable["report_id"].tolist(), current_id)
+
+        # Index of current selection in the visible list
+        id_list = selectable["report_id"].tolist()
+        label_list = selectable["label"].tolist()
+        try:
+            sel_index = id_list.index(report_id) if report_id else 0
+        except ValueError:
+            sel_index = 0
+
+        selected_label = st.sidebar.selectbox(
+            "Select report",
+            label_list,
+            index=sel_index,
+            key="sidebar_report_selector",
+        )
+        # Map label back to report_id
+        matched = selectable[selectable["label"] == selected_label]
+        if not matched.empty:
+            report_id = matched.iloc[0]["report_id"]
+
+    st.session_state["selected_report_id"] = report_id
+
+    # ── Selected report info ───────────────────────────────────────────────
+    if report_id:
+        row = selectable[selectable["report_id"] == report_id]
+        if not row.empty:
+            st.sidebar.markdown("**Selected report**")
+            st.sidebar.write(row.iloc[0].get("report_name", report_id))
+            st.sidebar.caption(f"`{report_id}`")
+
+    # ── Active filter summary (after selector) ────────────────────────────
+    filter_desc = active_filter_summary(active_filters, search_query, attention_only)
+    if filter_desc:
+        with st.sidebar.expander("Active filters"):
+            for desc in filter_desc:
+                st.caption(f"• {desc}")
+
+    return {
+        "report_id":          report_id,
+        "filtered_mart":      filtered_mart,
+        "selectable_reports": selectable,
+        "active_filters":     active_filters,
+        "search_query":       search_query,
+        "attention_only":     attention_only,
+        "total_count":        total_count,
+        "filtered_count":     filtered_count,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Overview render
 # ---------------------------------------------------------------------------
 
-def render_overview(data: dict[str, pd.DataFrame]) -> None:
+def render_overview(data: dict[str, pd.DataFrame], filtered_mart: pd.DataFrame | None = None) -> None:
     st.header("Portfolio Overview")
     mart = data.get("report_analytics", pd.DataFrame())
-    metrics = _portfolio_headline_metrics(mart)
-    as_of = metrics.get("analytics_as_of_date")
+
+    # Use filtered_mart for all counts and distributions; fall back to full mart.
+    display_mart = filtered_mart if filtered_mart is not None else mart
+    total_count = len(mart) if not mart.empty else 0
+    filtered_count = len(display_mart)
+    is_filtered = filtered_mart is not None and filtered_count < total_count
+
+    metrics = _portfolio_headline_metrics(display_mart)
+    as_of = (
+        (mart["analytics_as_of_date"].iloc[0] if "analytics_as_of_date" in mart.columns and not mart.empty else None)
+    )
 
     # --- Data freshness banner ---
     if as_of:
-        st.caption(
-            f"Analytics as of **{as_of}** · "
-            f"Run: `{metrics.get('analytics_run_id', '—')}`"
-        )
+        run_id = mart["analytics_run_id"].iloc[0] if "analytics_run_id" in mart.columns and not mart.empty else "—"
+        filter_note = f" · Showing **{filtered_count} of {total_count}** reports" if is_filtered else f" · **{total_count}** reports"
+        st.caption(f"Analytics as of **{as_of}** · Run: `{run_id}`{filter_note}")
     elif mart.empty:
         st.warning(
             "The canonical analytics mart (`outputs/analytics/mart_report_analytics.csv`) "
@@ -478,13 +678,26 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
     # ── 2. Portfolio AI summary ────────────────────────────────────────────
     portfolio_insight: dict[str, Any] = data.get("_portfolio_insight", {})  # type: ignore[assignment]
     portfolio_status: str = data.get("_portfolio_insight_status", "absent")  # type: ignore[assignment]
+    if is_filtered:
+        st.caption(
+            "ℹ️ **Portfolio AI summary reflects the full persisted portfolio, "
+            "not the current filter selection.** "
+            "Filter-specific GenAI summaries are not generated."
+        )
     _render_portfolio_genai(portfolio_insight, portfolio_status)
 
     st.divider()
 
     # ── 3. Attention shortlist ─────────────────────────────────────────────
     st.subheader("Attention shortlist")
+    # Shortlist is always full-portfolio (deterministic, not re-ranked by filters)
     shortlist = _attention_shortlist(mart)
+    if is_filtered:
+        st.caption(
+            "Shortlist reflects the **full portfolio** deterministic sort — "
+            "not the current filter selection. Items outside the current filter are still shown.",
+            help=DEFINITIONS["deterministic_shortlist"],
+        )
     total_actionable = (
         int((mart["recommended_report_action"] != "continue_monitoring").sum())
         if not mart.empty and "recommended_report_action" in mart.columns
@@ -528,8 +741,11 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
     st.divider()
 
     # ── 4. Status distributions ────────────────────────────────────────────
-    if not mart.empty:
-        st.subheader("Portfolio distributions")
+    if not display_mart.empty:
+        st.subheader(
+            "Portfolio distributions"
+            + (f" ({filtered_count} of {total_count} reports)" if is_filtered else "")
+        )
 
         dist_configs = [
             ("Historical usage", "historical_usage_status"),
@@ -545,7 +761,7 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
 
         for i, (label, field) in enumerate(dist_configs):
             order = _STATUS_ORDER.get(field)
-            df_dist = _distribution_table(mart, field, order)
+            df_dist = _distribution_table(display_mart, field, order)
             with all_cols[i]:
                 st.markdown(f"**{label}**")
                 if df_dist.empty:
@@ -556,7 +772,7 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
         # Model health — shown separately with an evidence-limitation note
         st.markdown("**Model health**")
         mh_dist = _distribution_table(
-            mart, "model_diagnostic_status",
+            display_mart, "model_diagnostic_status",
             _STATUS_ORDER.get("model_diagnostic_status"),
         )
         if mh_dist.empty:
@@ -564,8 +780,8 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
         else:
             st.dataframe(mh_dist, hide_index=True, use_container_width=True)
             insuff_count = int(
-                (mart.get("model_diagnostic_status", pd.Series()) == "insufficient_evidence").sum()
-            ) if "model_diagnostic_status" in mart.columns else 0
+                (display_mart.get("model_diagnostic_status", pd.Series()) == "insufficient_evidence").sum()
+            ) if "model_diagnostic_status" in display_mart.columns else 0
             if insuff_count > 0:
                 st.caption(
                     f"ℹ️ {insuff_count} report(s) show 'Insufficient evidence' — this means the "
@@ -573,7 +789,10 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
                     "It does not mean the model is unhealthy."
                 )
     else:
-        st.info("Status distributions are unavailable — mart not loaded.")
+        if display_mart.empty and not mart.empty:
+            st.info("No reports match the current filters — status distributions are empty.")
+        elif mart.empty:
+            st.info("Status distributions are unavailable — mart not loaded.")
 
     # ── 5. Legacy metric fallback (shown only when mart is missing) ─────────
     if mart.empty:
@@ -1294,30 +1513,35 @@ def main() -> None:
         st.warning("No report outputs were found. Run the forecasting and analytics notebooks or pipelines first.")
         return
 
+    # Initialise filter version (used to clear all filter widgets atomically)
+    if "_sf_v" not in st.session_state:
+        st.session_state["_sf_v"] = 0
+
+    # Initialise selected report from first available
     if "selected_report_id" not in st.session_state:
         st.session_state["selected_report_id"] = reports.iloc[0]["report_id"]
 
-    matching_index = reports.index[reports["report_id"] == st.session_state["selected_report_id"]]
-    selected_index = int(matching_index[0]) if len(matching_index) else 0
+    sidebar = render_sidebar(data, reports)
+    report_id = sidebar["report_id"]
+    filtered_mart = sidebar["filtered_mart"]
 
-    selected_label = st.sidebar.selectbox(
-        "Select report",
-        reports["label"].tolist(),
-        index=selected_index,
-    )
-    selected_report = reports.loc[reports["label"] == selected_label].iloc[0]
-    report_id = selected_report["report_id"]
-    st.session_state["selected_report_id"] = report_id
+    if report_id is None:
+        st.info(
+            "No reports match the current search or filters. "
+            "Use the sidebar to clear filters or broaden the search."
+        )
+        return
 
-    st.sidebar.markdown("### Report")
-    st.sidebar.write(selected_report["report_name"])
-    st.sidebar.caption(report_id)
+    # Get display name from the selectable list (already deduplicated)
+    selectable = sidebar["selectable_reports"]
+    selected_row = selectable[selectable["report_id"] == report_id]
+    report_name = selected_row.iloc[0].get("report_name", report_id) if not selected_row.empty else report_id
 
     tabs = st.tabs(["Portfolio Overview", "Report Explorer"])
     with tabs[0]:
-        render_overview(data)
+        render_overview(data, filtered_mart=filtered_mart)
     with tabs[1]:
-        render_report_explorer(data, report_id, selected_report.get("report_name"))
+        render_report_explorer(data, report_id, report_name)
 
 
 if __name__ == "__main__":

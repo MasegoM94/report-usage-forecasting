@@ -311,6 +311,47 @@ Production forecast outputs use `forecast_date`; legacy outputs use `Date`. `nor
 
 Engagement fields that cannot be shown due to small user populations are displayed as **Suppressed (privacy)** — they are never shown as zero. The `privacy_suppression_status`, `*_privacy_suppressed`, and `privacy_suppressed_fields` columns in the engagement mart control this behaviour.
 
+### Filters, navigation, and definitions (Sprint 9 Step 5)
+
+The sidebar and portfolio overview were extended to support filterable views and consistent terminology.
+
+**Sidebar sections (in order):**
+
+1. **Report search** — case-insensitive substring match across `report_name`, `report_id`, and `workspace_name`.
+2. **Portfolio filters** (collapsible expander) — multiselect controls for up to 12 mart fields. A filter is only offered when the field has ≥ 2 distinct non-null values in the current portfolio.
+3. **Requires attention** toggle — shows only reports where `overall_review_priority ∈ {high, critical}` OR `recommended_report_action ≠ continue_monitoring`.
+4. **Display controls** — sort order selector (review priority, report name, recent usage).
+5. **Report selector** — shows only reports that match all active filters.
+
+**Filter behaviour:**
+
+- Filters are applied with AND logic across fields and OR logic within a field's selected values.
+- Portfolio distributions and "Showing X of Y reports" banner in the overview reflect the current filter selection.
+- The AI portfolio summary and the deterministic attention shortlist always reflect the **full portfolio** (not the current filter). Both display an explicit note when filters are active.
+- **Clear filters** increments a version counter (`_sf_v`) to atomically reset all Streamlit filter widgets to their defaults.
+
+**Centralised definitions (`src/app/utils/definitions.py`):**
+
+- `DEFINITIONS`: 19 concept explanations used as tooltip `help=` text (prediction interval, insufficient evidence, engagement status, concentration, privacy suppression, deterministic shortlist, GenAI summary, and more).
+- `STATUS_LABELS`: comprehensive `code → display string` mapping for all mart status values across all domain areas.
+- `status_label(code)`: safe lookup; returns `"—"` for null/blank/NaN, title-cased code for unknown future values.
+
+**Key terminology constraints documented:**
+
+| Concept | Correct label | Prohibited label |
+|---------|--------------|-----------------|
+| Forecast shaded band | Prediction interval | Confidence interval |
+| `insufficient_evidence` | Insufficient evidence (evidence maturity) | Unhealthy / poor model |
+| High concentration | Dependency risk | Misuse |
+| Low engagement | Low engagement (may still be high value) | Low business value |
+| Recommended action | Recommendation (not executed) | Automated action |
+
+**Pure-logic helpers** (no Streamlit dependency, fully testable): `src/app/utils/filter_helpers.py`, `src/app/utils/definitions.py`.
+
+**Tests:** 33 definition tests (`tests/test_definitions.py`), 61 filter tests (`tests/test_filter_helpers.py`).
+
+---
+
 ### Report explorer (Sprint 9 Step 4)
 
 The **Report Explorer** tab consolidates all report-level detail into a single, ordered view. It replaced the former three separate tabs (Forecast Explorer, Behaviour Insights, AI Insights).
