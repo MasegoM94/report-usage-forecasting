@@ -43,6 +43,17 @@ from typing import Any, Literal
 
 import pandas as pd
 
+try:
+    import streamlit as st
+
+    def _cache(fn):  # type: ignore[return]
+        return st.cache_data(fn)
+except ImportError:
+    # Running outside a Streamlit session (tests, scripts).
+    # Apply a no-op decorator so the module remains importable.
+    def _cache(fn):
+        return fn
+
 
 OUTPUT_PATHS = {
     "forecast_features": Path("data/processed/mart_report_daily_context.csv"),
@@ -63,6 +74,10 @@ OUTPUT_PATHS = {
     # dim_user: Path("data/processed/dim_user.csv"),  # excluded — restricted identity data
     "dim_report": Path("data/processed/dim_report.csv"),
     "fact_report_views": Path("data/processed/fact_report_views.csv"),
+    # Canonical report-level analytics mart (Sprint 8+).  One row per report.
+    "report_analytics": Path("outputs/analytics/mart_report_analytics.csv"),
+    # Engagement mart — report-level aggregates only, no user identifiers.
+    "engagement": Path("outputs/analytics/mart_report_engagement.csv"),
 }
 
 # Monitoring files written by the production pipeline.  Keyed by the logical
@@ -237,6 +252,26 @@ def read_json_records(path: Path) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def normalize_forecast_date(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure forecast DataFrames expose a canonical ``Date`` column.
+
+    Production forecast outputs use ``forecast_date``; legacy outputs use ``Date``.
+    This function promotes ``forecast_date`` → ``Date`` when ``Date`` is absent,
+    then converts the result to datetime.  Existing valid ``Date`` columns are
+    left untouched (only converted to datetime if not already).
+
+    Invalid date values are coerced to NaT rather than raising.
+    """
+    if df.empty:
+        return df
+    result = df.copy()
+    if "Date" not in result.columns and "forecast_date" in result.columns:
+        result["Date"] = result["forecast_date"]
+    if "Date" in result.columns:
+        result["Date"] = pd.to_datetime(result["Date"], errors="coerce")
+    return result
+
+
 def normalize_report_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Add standard id/name columns when files use alternate source names."""
     if df.empty:
@@ -379,8 +414,72 @@ def validate_report_features_schema(df: pd.DataFrame) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Canonical report analytics mart validation
+# ---------------------------------------------------------------------------
+
+# Columns that must be present when mart_report_analytics.csv is non-empty.
+# A missing required column raises ValueError immediately — it signals schema
+# drift that must be fixed rather than silently degraded.
+_MART_ANALYTICS_REQUIRED_COLS: set[str] = {
+    "report_id",
+    "analytics_run_id",
+    "analytics_as_of_date",
+}
+
+# Columns that are expected in the mart but whose absence is tolerated.
+# The app degrades gracefully (shows "N/A" or omits the section) rather than
+# crashing.  This list is informational only — it is not enforced at load time.
+_MART_ANALYTICS_EXPECTED_COLS: set[str] = {
+    "report_name",
+    "overall_report_status",
+    "overall_review_priority",
+    "recommended_report_action",
+    "forecast_outlook_status",
+    "model_diagnostic_status",
+    "historical_usage_status",
+}
+
+
+def validate_mart_analytics_schema(df: pd.DataFrame) -> None:
+    """Raise ValueError if *df* is non-empty and missing required mart columns.
+
+    Empty DataFrames (file absent or unreadable) are silently accepted — the
+    mart is optional from the app's perspective; its absence degrades gracefully.
+    """
+    if df.empty:
+        return
+    missing = _MART_ANALYTICS_REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise ValueError(
+            "mart_report_analytics.csv is missing required column(s): "
+            f"{sorted(missing)}. "
+            "If the mart schema changed, update _MART_ANALYTICS_REQUIRED_COLS "
+            "in src/app/utils/load_data.py."
+        )
+    duplicates = df[df["report_id"].duplicated(keep=False)]
+    if not duplicates.empty:
+        dup_ids = duplicates["report_id"].unique().tolist()
+        raise ValueError(
+            f"mart_report_analytics.csv contains duplicate report_id values: {dup_ids}. "
+            "The mart must have exactly one row per report."
+        )
+
+
+@_cache
 def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
     """Load all app inputs from outputs/* into a keyed dictionary.
+
+    Caching
+    -------
+    When called from a running Streamlit session this function is cached via
+    ``@st.cache_data``.  The cache is keyed on the ``root`` argument (defaults
+    to the project root derived from the file path).  To force a reload during
+    development press the **⟳ Rerun** button while holding Shift, or call
+    ``st.cache_data.clear()`` from a Python console.
+
+    Outside Streamlit (tests, scripts) the decorator is a no-op so the function
+    behaves as a plain function.
 
     Monitoring data
     ---------------
@@ -409,6 +508,7 @@ def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
             data[key] = normalize_report_columns(read_csv(path))
 
     validate_report_features_schema(data.get("report_features", pd.DataFrame()))
+    validate_mart_analytics_schema(data.get("report_analytics", pd.DataFrame()))
 
     # Load monitoring outputs and promote to top-level keys
     monitoring = load_monitoring_data(base)
@@ -433,6 +533,10 @@ def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
     # status "absent" → keep data["forecasts"] from legacy path above (no complaint)
     # status "empty"  → production file exists but has no rows; keep legacy for display
     #                    but do NOT raise — an empty production file is not invalid
+
+    # Ensure all forecast DataFrames expose the canonical "Date" column.
+    # Production files use "forecast_date"; legacy files use "Date".
+    data["forecasts"] = normalize_forecast_date(data.get("forecasts", pd.DataFrame()))
 
     return data
 

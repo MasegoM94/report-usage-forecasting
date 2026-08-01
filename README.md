@@ -274,9 +274,42 @@ The scripts perform the same core workflow as the notebooks:
 - `outputs/metrics/` stores model performance and comparison outputs.
 - `outputs/segments/` stores report and user segmentation outputs.
 - `outputs/diagnostics/` stores diagnostic rule outputs.
+- `outputs/analytics/` stores the canonical analytics mart (`mart_report_analytics.csv`, `mart_report_engagement.csv`).
 - `outputs/insights/` stores GenAI-generated insight outputs (report-level and portfolio-level).
 - `outputs/evaluation/` stores GenAI evaluation results and regression summaries.
 - `outputs/validation/` stores validation and reconciliation outputs.
+
+## Streamlit Application
+
+```bash
+streamlit run src/app/streamlit_app.py
+```
+
+### Canonical inputs (Sprint 9+)
+
+The app reads the following outputs. Missing optional files produce a graceful empty state — the app does not crash.
+
+| Key | File | Required | Purpose |
+|-----|------|----------|---------|
+| `report_analytics` | `outputs/analytics/mart_report_analytics.csv` | Optional | Canonical report-level mart: one row per report, analytics run ID, as-of date, status, priority, recommended action |
+| `engagement` | `outputs/analytics/mart_report_engagement.csv` | Optional | Report-level engagement aggregates: returning-user share, concentration, active days, privacy suppression flags |
+| `insights` | `outputs/insights/report_ai_insights.json` | Optional | Report-level GenAI insights (Sprint 8 fields + legacy aliases) |
+| `forecasts` | `outputs/forecasts/report_view_forecasts_latest.csv` | Optional | Legacy forecast output (replaced by `production_forecasts_latest.csv` when present) |
+| `metrics` | `outputs/metrics/report_view_metrics_latest.csv` | Optional | Forecast accuracy metrics and reliability flags |
+| `segments` | `outputs/segments/report_segments.csv` | Optional | Report segment labels |
+| `diagnostics` | `outputs/diagnostics/report_diagnostics.csv` | Optional | Diagnostic flag columns |
+
+### Forecast date normalization
+
+Production forecast outputs use `forecast_date`; legacy outputs use `Date`. `normalize_forecast_date()` in `src/app/utils/load_data.py` promotes `forecast_date` → `Date` when `Date` is absent, so both sources work with the same chart code.
+
+### Caching
+
+`load_app_data()` is decorated with `@st.cache_data` when running inside a Streamlit session. File reads and normalization are cached for the duration of the session. To force a full reload during development, press **Shift + ⟳ Rerun** in the browser, or call `st.cache_data.clear()` from a Python console. Outside Streamlit (tests, scripts) the decorator is a no-op.
+
+### Privacy suppression
+
+Engagement fields that cannot be shown due to small user populations are displayed as **Suppressed (privacy)** — they are never shown as zero. The `privacy_suppression_status`, `*_privacy_suppressed`, and `privacy_suppressed_fields` columns in the engagement mart control this behaviour.
 
 ## Sprint 5: Model Diagnostics
 

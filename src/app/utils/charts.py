@@ -21,14 +21,24 @@ def _empty_figure(message: str) -> go.Figure:
 
 
 def usage_forecast_chart(report_forecasts: pd.DataFrame) -> go.Figure:
-    """Create a combined historical actuals and forecast chart."""
+    """Create a combined historical actuals and forecast chart.
+
+    Renders actuals (when present), forecast values, and a CI band.
+    Returns an empty figure only when neither actuals nor forecast values
+    are available — not when only one of the two is missing.
+    """
     if report_forecasts.empty or "Date" not in report_forecasts.columns:
+        return _empty_figure("No forecast data available for this report.")
+
+    has_actuals = "actual" in report_forecasts.columns and report_forecasts["actual"].notna().any()
+    has_forecast = "forecast" in report_forecasts.columns and report_forecasts["forecast"].notna().any()
+    if not has_actuals and not has_forecast:
         return _empty_figure("No forecast data available for this report.")
 
     df = report_forecasts.sort_values("Date")
     fig = go.Figure()
 
-    historical = df[df.get("actual").notna()] if "actual" in df.columns else pd.DataFrame()
+    historical = df[df["actual"].notna()] if "actual" in df.columns else pd.DataFrame()
     if not historical.empty:
         fig.add_trace(
             go.Scatter(

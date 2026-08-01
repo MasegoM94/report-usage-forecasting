@@ -299,9 +299,45 @@ def diagnostics_flags(row: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _mart_report_counts(mart: "pd.DataFrame") -> dict[str, Any]:
+    """Derive simple report counts from the canonical mart when it is available.
+
+    Returns a dict with total / active / action counts or None values when the
+    mart is empty or missing the required columns.  All calculations are simple
+    row counts and category distributions — no threshold logic is duplicated here.
+    """
+    if mart.empty or "report_id" not in mart.columns:
+        return {}
+    total = int(mart["report_id"].nunique())
+    out: dict[str, Any] = {"total_reports": total}
+    if "overall_report_status" in mart.columns:
+        status_counts = mart["overall_report_status"].value_counts().to_dict()
+        out["status_counts"] = status_counts
+    if "overall_review_priority" in mart.columns:
+        priority_counts = mart["overall_review_priority"].value_counts().to_dict()
+        out["priority_counts"] = priority_counts
+        # Reports flagged as high or critical review priority
+        high_priority = mart[
+            mart["overall_review_priority"].isin({"high", "critical"})
+        ]
+        out["high_priority_count"] = len(high_priority)
+    if "recommended_report_action" in mart.columns:
+        action_counts = mart["recommended_report_action"].value_counts().to_dict()
+        out["action_counts"] = action_counts
+    if "forecast_outlook_status" in mart.columns:
+        out["forecast_outlook_counts"] = mart["forecast_outlook_status"].value_counts().to_dict()
+    if "analytics_run_id" in mart.columns and not mart.empty:
+        out["analytics_run_id"] = mart["analytics_run_id"].iloc[0]
+    if "analytics_as_of_date" in mart.columns and not mart.empty:
+        out["analytics_as_of_date"] = mart["analytics_as_of_date"].iloc[0]
+    return out
+
+
 def render_overview(data: dict[str, pd.DataFrame]) -> None:
     st.header("Overview")
     analysis_period = get_dashboard_analysis_period(data)
+    mart = data.get("report_analytics", pd.DataFrame())
+    mart_counts = _mart_report_counts(mart)
     user_adoption = calculate_user_adoption_metrics(data)
     report_adoption = calculate_report_adoption_metrics(data)
     reliability = calculate_forecast_reliability_summary(data)
@@ -339,12 +375,15 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
     )
 
     st.subheader("Report Adoption")
+    # Prefer mart-derived counts when the canonical mart is loaded.
+    mart_total = mart_counts.get("total_reports")
+    display_total = mart_total if mart_total is not None else report_adoption.get("total_reports")
     report_cols = st.columns(3)
     metric_with_help(
         report_cols[0],
         "Total Reports",
-        fmt_number(report_adoption.get("total_reports")),
-        "The number of reports available in the report catalogue.",
+        fmt_number(display_total),
+        "The number of reports in the canonical analytics mart.",
     )
     metric_with_help(
         report_cols[1],
@@ -358,6 +397,13 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
         fmt_percent(report_adoption.get("report_usage_rate")),
         "The percentage of available reports that were viewed at least once.",
     )
+
+    # Analytics freshness — show run ID and as-of date when the mart is loaded
+    if mart_counts.get("analytics_as_of_date"):
+        st.caption(
+            f"Analytics as of: **{mart_counts['analytics_as_of_date']}** "
+            f"(run: {mart_counts.get('analytics_run_id', 'unknown')})"
+        )
 
     st.subheader("Monitoring")
     monitoring_cols = st.columns(2)
@@ -527,6 +573,31 @@ def render_forecast_explorer(
         )
 
 
+def _suppressed_or(value: Any, suppressed: bool, label: str = "Suppressed (privacy)") -> str:
+    """Return *label* when *suppressed* is true, otherwise format *value*."""
+    if suppressed:
+        return label
+    return fmt_percent(value)
+
+
+def _engagement_evidence_note(eng_row: "pd.Series[Any]") -> str | None:
+    """Return a human-readable explanation when engagement evidence is limited."""
+    if eng_row.empty:
+        return "No engagement data is available for this report."
+    status = eng_row.get("engagement_evidence_status", "")
+    suppression = eng_row.get("privacy_suppression_status", "not_suppressed")
+    if suppression not in ("not_suppressed", None, ""):
+        field_count = eng_row.get("privacy_suppressed_field_count", "")
+        return (
+            f"Some engagement fields are privacy-suppressed ({field_count} field(s)). "
+            "Suppressed values are not shown to protect user privacy."
+        )
+    if str(status).startswith("incomplete") or str(status) == "insufficient":
+        missing = eng_row.get("missing_engagement_evidence", "")
+        return f"Engagement evidence is incomplete: {missing}." if missing else "Engagement evidence is incomplete."
+    return None
+
+
 def render_behaviour_insights(
     data: dict[str, pd.DataFrame],
     report_id: str,
@@ -536,15 +607,47 @@ def render_behaviour_insights(
     st.header("Behaviour Insights")
     report_display_name = selected_report_display_name(data, report_id, selected_report_name)
     st.subheader(f"Now viewing behaviour insights for: {report_display_name}")
-    feature_row = row_for_report(data["report_features"], report_id)
     segment_row = row_for_report(data["segments"], report_id)
     diagnostic_row = row_for_report(data["diagnostics"], report_id)
 
-    days_active_raw = feature_row.get("days_active")
-    if pd.notna(days_active_raw) and total_days is not None:
+    # Engagement fields come from the engagement mart (report-level aggregates only).
+    # Fields that were previously read from report_features (repeat_rate,
+    # top_1_user_view_share, days_active) were removed in the v2 schema migration
+    # and now live in mart_report_engagement.csv under updated names.
+    eng_row = row_for_report(data.get("engagement", pd.DataFrame()), report_id)
+
+    def _is_suppressed(field: str) -> bool:
+        """True when the engagement mart explicitly marks this field as suppressed."""
+        if eng_row.empty:
+            return False
+        fields_str = str(eng_row.get("privacy_suppressed_fields", "") or "")
+        return field in fields_str
+
+    # Active days (active_usage_days_28d: distinct days with ≥1 view in last 28 days)
+    days_active_raw = eng_row.get("active_usage_days_28d") if not eng_row.empty else None
+    activity_suppressed = _is_suppressed("activity") or (
+        not eng_row.empty and truthy(eng_row.get("activity_privacy_suppressed"))
+    )
+    if activity_suppressed:
+        days_active_display = "Suppressed (privacy)"
+    elif pd.notna(days_active_raw) and total_days is not None:
         days_active_display = f"{fmt_number(days_active_raw)} / {total_days} days"
     else:
         days_active_display = fmt_number(days_active_raw)
+
+    # Returning-user share (repeat_view_user_share_28d: share of users who viewed >1 time)
+    cohort_suppressed = _is_suppressed("cohort") or (
+        not eng_row.empty and truthy(eng_row.get("cohort_privacy_suppressed"))
+    )
+    returning_share_raw = eng_row.get("returning_user_share_28d") if not eng_row.empty else None
+    returning_share_display = _suppressed_or(returning_share_raw, cohort_suppressed)
+
+    # Top-user concentration (top_1_user_view_share_28d: share of views by single top user)
+    concentration_suppressed = _is_suppressed("concentration") or (
+        not eng_row.empty and truthy(eng_row.get("concentration_privacy_suppressed"))
+    )
+    top_user_raw = eng_row.get("top_1_user_view_share_28d") if not eng_row.empty else None
+    top_user_display = _suppressed_or(top_user_raw, concentration_suppressed)
 
     col1, col2, col3, col4 = st.columns(4)
     metric_with_help(
@@ -561,29 +664,38 @@ def render_behaviour_insights(
     )
     metric_with_help(
         col2,
-        "Repeat rate",
-        fmt_percent(feature_row.get("repeat_rate")),
-        "The share of report views that came from users who returned to view it more than once. "
-        "A high repeat rate suggests the report is genuinely useful and people keep coming back "
-        "to it. A low repeat rate may mean users visited once and did not find enough value to return.",
+        "Returning users (28d)",
+        returning_share_display,
+        "The share of active users in the last 28 days who had previously viewed this report "
+        "(returning, not first-time visitors). "
+        "A high share suggests the report is genuinely useful and people keep coming back. "
+        "A low share may mean most users visited only once.\n\n"
+        "Shown as 'Suppressed (privacy)' when the user population is too small to share safely.",
     )
     metric_with_help(
         col3,
-        "Top user share",
-        fmt_percent(feature_row.get("top_1_user_view_share")),
-        "The share of total report views attributable to the single most active user. "
-        "A high value means one person drives most of the traffic, which is a dependency "
-        "risk if that user leaves or changes roles. A lower value suggests broader, "
-        "more resilient usage across the organisation.",
+        "Top user share (28d)",
+        top_user_display,
+        "The share of total report views in the last 28 days attributable to the single most "
+        "active user. A high value means one person drives most of the traffic, which is a "
+        "dependency risk if that user changes roles or leaves. A lower value suggests broader, "
+        "more resilient usage.\n\n"
+        "Shown as 'Suppressed (privacy)' when the user population is too small to share safely.",
     )
     metric_with_help(
         col4,
-        "Days active",
+        "Active days (28d)",
         days_active_display,
         "The number of distinct days on which this report received at least one view during "
-        "the analysis period. More active days generally indicate a report that is regularly "
-        "consulted rather than viewed in occasional bursts.",
+        "the last 28 days. More active days generally indicate a report that is regularly "
+        "consulted rather than viewed in occasional bursts.\n\n"
+        "Shown as 'Suppressed (privacy)' when activity data cannot be shared safely.",
     )
+
+    # Surface evidence or suppression limitations above the diagnostics section
+    evidence_note = _engagement_evidence_note(eng_row)
+    if evidence_note:
+        st.info(evidence_note)
 
     st.subheader("Diagnostic summary")
     st.write(diagnostic_row.get("diagnostic_summary", "No diagnostic summary available."))

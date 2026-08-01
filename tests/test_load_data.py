@@ -106,8 +106,8 @@ class TestValidateReportFeaturesSchema:
         df = self._make_v2()
         validate_report_features_schema(df)  # must not raise
 
-    def test_extra_columns_allowed(self):
-        """Extra columns beyond the required set are fine."""
+    def test_extra_single_column_allowed(self):
+        """A single extra column beyond the required set is permitted."""
         df = self._make_v2(extra_col="x")
         validate_report_features_schema(df)  # must not raise
 
