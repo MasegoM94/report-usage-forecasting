@@ -36,7 +36,7 @@ Two versioned prompts (`report_insight_v1`, `portfolio_insight_v1`) in `src/gena
 23 labelled fixture cases (`tests/fixtures/genai_evaluation_cases.json`), 10 golden configs (`tests/fixtures/genai_golden_outputs.json`), 79 deterministic tests in `tests/test_genai_evaluation.py` (all passing), human-review rubric in `docs/genai_evaluation_rubric.md`, and `run_regression_against_stored_outputs()` for end-to-end regression against persisted outputs. No LLM-as-judge — all checks are regex/value matching.
 
 ### Step 10 — Documentation and Notebook Cleanup
-- `notebooks/08_genai_insights.ipynb`: full rewrite — 12 sections covering architecture, canonical input, report context (allowlist + privacy), report pipeline, portfolio context (aggregates + shortlist), portfolio output, 6 validation examples (no live API calls), evaluation framework, hash-reuse demonstration, limitations, and output file verification. No hardcoded paths. No API key exposure.
+- `notebooks/10_genai_insights.ipynb`: full rewrite — 12 sections covering architecture, canonical input, report context (allowlist + privacy), report pipeline, portfolio context (aggregates + shortlist), portfolio output, 6 validation examples (no live API calls), evaluation framework, hash-reuse demonstration, limitations, and output file verification. No hardcoded paths. No API key exposure.
 - `docs/genai_insight_schemas.md`: complete schema reference for all 5 types.
 - `docs/genai_operations.md`: running commands, generation statuses, 11 failure modes, recovery, hash-reuse, cost controls, implemented vs. proposed monitoring metrics.
 - `README.md`: stale legacy four-CSV text removed; canonical outputs section updated to include evaluation outputs; GenAI evaluation framework section added (Step 9).
@@ -107,7 +107,7 @@ All constraints were respected throughout the sprint:
 - `tests/fixtures/genai_golden_outputs.json` — 10 golden configs
 
 ### Notebooks
-- `notebooks/08_genai_insights.ipynb` — full 12-section demonstration notebook
+- `notebooks/10_genai_insights.ipynb` — full 12-section demonstration notebook
 
 ### Documentation
 - `docs/genai_insight_schemas.md`

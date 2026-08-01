@@ -1,10 +1,10 @@
-"""Smoke tests for notebooks/08_report_analytics.ipynb."""
+"""Smoke tests for notebooks/09_report_analytics.ipynb."""
 import json
 import re
 from pathlib import Path
 import pytest
 
-NOTEBOOK_PATH = Path("notebooks/08_report_analytics.ipynb")
+NOTEBOOK_PATH = Path("notebooks/09_report_analytics.ipynb")
 
 
 @pytest.fixture(scope="module")

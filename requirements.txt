@@ -130,5 +130,5 @@ webcolors==25.10.0
 webencodings==0.5.1
 websocket-client==1.9.0
 widgetsnbextension==4.0.15
-plotly
-streamlit
+plotly==6.9.0
+streamlit==1.57.0

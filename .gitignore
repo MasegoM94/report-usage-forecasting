@@ -43,7 +43,34 @@ outputs/insights/*
 # Local environment files
 .env
 .env.*
+!.env.example
 
 # Operating system files
 .DS_Store
+**/.DS_Store
 Thumbs.db
+
+# Microsoft Word temporary lock files
+~$*.docx
+~$*.doc
+~$*.xlsx
+~$*.pptx
+docs/~$*.docx
+
+# Local audit and document-generation artefacts
+CODEBASE_AUDIT.docx
+build_audit_doc.py
+build_interview_doc.py
+build_interview_doc.js
+
+# Private preparation documents (kept locally, not published to the repository)
+docs/interview_prep_*.md
+docs/interview_prep_*.docx
+docs/sprint_*_completion.md
+
+# Local caches and build artefacts
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
