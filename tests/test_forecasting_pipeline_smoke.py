@@ -307,7 +307,7 @@ _NOTEBOOK_PATH = (
 # they must be imported from src.pipelines.run_forecasting_pipeline.
 _FORBIDDEN_DEF_NAMES = {
     "generate_synthetic_report_usage",
-    "choose_forecasting_input",
+    "load_canonical_daily_series",
     "standardise_forecasting_columns",
     "load_forecast_series_input",
     "filter_by_data_criteria",

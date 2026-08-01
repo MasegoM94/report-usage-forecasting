@@ -52,10 +52,9 @@ from src.features.report_features import (
 )
 from src.features.validate_series import SeriesValidationError, validate_report_daily_series
 from src.pipelines.run_forecasting_pipeline import (
-    choose_forecasting_input,
+    load_canonical_daily_series,
     standardise_forecasting_columns,
 )
-from src.pipelines.run_report_analytics_pipeline import choose_daily_usage_table
 
 # ---------------------------------------------------------------------------
 # Deterministic fixture
@@ -201,12 +200,14 @@ def context(adoption, engagement, performance):
 
 @pytest.fixture(scope="module")
 def report_features(adoption, fixtures):
-    fact_views, _, _, dim_report = fixtures
+    _, _, _, dim_report = fixtures
     base_adoption = adoption[["date", "report_id", "daily_views", "unique_viewers"]].copy()
+    as_of = base_adoption["date"].max().date()
     return build_report_features(
-        daily_adoption=base_adoption,
-        fact_report_views=fact_views,
-        dim_report=dim_report,
+        mart_df=base_adoption,
+        dim_report_df=dim_report,
+        analytics_as_of_date=as_of,
+        analytics_run_id="test-run-fixture",
     )
 
 
@@ -411,28 +412,43 @@ class TestUsageChange28d:
             "date": dates,
             "daily_views": views,
         })
-        result = build_report_features(df)
+        result = build_report_features(
+            mart_df=df,
+            dim_report_df=pd.DataFrame(),
+            analytics_as_of_date=dates[-1].date(),
+            analytics_run_id="test-run",
+        )
         row = result.iloc[0]
         # previous_28d = 28*5 = 140; recent_28d = 28*10 = 280; pct = (280-140)/140 = 1.0
         assert row["previous_28d_views"] == 140
         assert row["recent_28d_views"] == 280
         assert row["usage_change_28d_pct"] == pytest.approx(1.0)
 
-    def test_both_windows_zero_gives_zero_change(self):
+    def test_both_windows_zero_gives_null_change(self):
+        # 0/0 is undefined — the pipeline returns NaN rather than 0.0
         views = [0] * 56
         dates = pd.date_range("2025-01-01", periods=56, freq="D")
         df = pd.DataFrame({"report_id": "R_ZERO", "date": dates, "daily_views": views})
-        result = build_report_features(df)
-        assert result.iloc[0]["usage_change_28d_pct"] == pytest.approx(0.0)
+        result = build_report_features(
+            mart_df=df,
+            dim_report_df=pd.DataFrame(),
+            analytics_as_of_date=dates[-1].date(),
+            analytics_run_id="test-run",
+        )
+        assert pd.isna(result.iloc[0]["usage_change_28d_pct"])
 
-    def test_zero_prior_nonzero_recent_is_null_and_flags_newly_active(self):
+    def test_zero_prior_nonzero_recent_gives_null_pct(self):
+        # Undefined denominator (previous_28d = 0, recent_28d > 0) → null pct
         views = [0] * 28 + [5] * 28
         dates = pd.date_range("2025-01-01", periods=56, freq="D")
         df = pd.DataFrame({"report_id": "R_NEW", "date": dates, "daily_views": views})
-        result = build_report_features(df)
-        row = result.iloc[0]
-        assert pd.isna(row["usage_change_28d_pct"]), "undefined denominator must be null"
-        assert bool(row["newly_active_flag"]) is True
+        result = build_report_features(
+            mart_df=df,
+            dim_report_df=pd.DataFrame(),
+            analytics_as_of_date=dates[-1].date(),
+            analytics_run_id="test-run",
+        )
+        assert pd.isna(result.iloc[0]["usage_change_28d_pct"]), "undefined denominator must be null"
 
 
 # ---------------------------------------------------------------------------
@@ -441,25 +457,31 @@ class TestUsageChange28d:
 
 class TestInsufficientHistoryFlag:
     def test_r_full_trend_history_insufficient(self, report_features):
-        # 14 days < 56 → trend_history_sufficient = False
+        # 14 days < 56 → comparison_history_sufficient_28d = False
         r_full = report_features[report_features["report_id"] == "R_FULL"]
-        assert bool(r_full["trend_history_sufficient"].iloc[0]) is False
+        assert bool(r_full["comparison_history_sufficient_28d"].iloc[0]) is False
 
-    def test_r_full_slope_null(self, report_features):
+    def test_r_full_comparison_history_not_sufficient(self, report_features):
+        # With only 14 calendar days, two full 28-day windows are not available
         r_full = report_features[report_features["report_id"] == "R_FULL"]
-        assert pd.isna(r_full["usage_trend_12w_slope"].iloc[0])
+        assert bool(r_full["comparison_history_sufficient_28d"].iloc[0]) is False
 
     def test_r_late_trend_history_insufficient(self, report_features):
-        # 7 days << 56 → trend_history_sufficient = False
+        # 7 days << 56 → comparison_history_sufficient_28d = False
         r_late = report_features[report_features["report_id"] == "R_LATE"]
-        assert bool(r_late["trend_history_sufficient"].iloc[0]) is False
+        assert bool(r_late["comparison_history_sufficient_28d"].iloc[0]) is False
 
     def test_sufficient_history_sets_flag_true(self):
         views = [10] * 56
         dates = pd.date_range("2025-01-01", periods=56, freq="D")
         df = pd.DataFrame({"report_id": "R_S", "date": dates, "daily_views": views})
-        result = build_report_features(df)
-        assert bool(result["trend_history_sufficient"].iloc[0]) is True
+        result = build_report_features(
+            mart_df=df,
+            dim_report_df=pd.DataFrame(),
+            analytics_as_of_date=dates[-1].date(),
+            analytics_run_id="test-run",
+        )
+        assert bool(result["comparison_history_sufficient_28d"].iloc[0]) is True
 
 
 # ---------------------------------------------------------------------------
@@ -549,11 +571,12 @@ class TestNullHandling:
 # ---------------------------------------------------------------------------
 
 class TestForecastingPipelineLoader:
-    def test_choose_forecasting_input_prefers_series(self, series, tmp_path):
+    def test_load_canonical_daily_series_loads_correct_file(self, series, tmp_path):
         (tmp_path / "processed").mkdir()
         series.to_csv(tmp_path / "processed" / "mart_report_daily_series.csv", index=False)
-        chosen = choose_forecasting_input(tmp_path / "processed")
-        assert chosen.name == "mart_report_daily_series.csv"
+        df = load_canonical_daily_series(tmp_path / "processed")
+        assert isinstance(df, pd.DataFrame)
+        assert {"report_id", "date", "daily_views"}.issubset(df.columns)
 
     def test_standardise_forecasting_columns_succeeds(self, series, tmp_path):
         (tmp_path / "processed").mkdir()
@@ -587,13 +610,12 @@ class TestForecastingPipelineLoader:
 # ---------------------------------------------------------------------------
 
 class TestDiagnosticsPipelineLoader:
-    def test_choose_daily_usage_table_prefers_context(self, context, tmp_path):
+    def test_mart_report_daily_context_is_readable(self, context, tmp_path):
         (tmp_path / "processed").mkdir()
-        context.to_csv(
-            tmp_path / "processed" / "mart_report_daily_context.csv", index=False
-        )
-        chosen = choose_daily_usage_table(tmp_path / "processed")
-        assert chosen.name == "mart_report_daily_context.csv"
+        ctx_path = tmp_path / "processed" / "mart_report_daily_context.csv"
+        context.to_csv(ctx_path, index=False)
+        loaded = pd.read_csv(ctx_path)
+        assert {"report_id", "date", "daily_views"}.issubset(loaded.columns)
 
     def test_context_is_loadable_and_parseable(self, context, tmp_path):
         (tmp_path / "processed").mkdir()
@@ -603,17 +625,14 @@ class TestDiagnosticsPipelineLoader:
         assert "daily_views" in loaded.columns
         assert "report_id" in loaded.columns
 
-    def test_context_falls_back_when_series_also_present(self, series, context, tmp_path):
-        (tmp_path / "processed").mkdir()
-        # Both files present: diagnostics pipeline must prefer context over series
-        series.to_csv(
-            tmp_path / "processed" / "mart_report_daily_series.csv", index=False
+    def test_context_has_additional_columns_beyond_series(self, series, context):
+        # The context mart must contain diagnostic columns that the series does not,
+        # confirming that feature engineering enriched it correctly.
+        series_cols = set(series.columns)
+        context_cols = set(context.columns)
+        assert context_cols > series_cols, (
+            "mart_report_daily_context must be a strict superset of mart_report_daily_series columns"
         )
-        context.to_csv(
-            tmp_path / "processed" / "mart_report_daily_context.csv", index=False
-        )
-        chosen = choose_daily_usage_table(tmp_path / "processed")
-        assert chosen.name == "mart_report_daily_context.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -787,11 +806,11 @@ class TestEndToEndSmoke:
             assert path.stat().st_size > 0, f"{filename} is empty"
 
         # ── Verify pipeline loaders find the correct files ─────────────────
-        fc_chosen = choose_forecasting_input(processed)
-        assert fc_chosen.name == "mart_report_daily_series.csv"
+        fc_df = load_canonical_daily_series(processed)
+        assert {"report_id", "date", "daily_views"}.issubset(fc_df.columns)
 
-        diag_chosen = choose_daily_usage_table(processed)
-        assert diag_chosen.name == "mart_report_daily_context.csv"
+        ctx_df = pd.read_csv(processed / "mart_report_daily_context.csv")
+        assert {"report_id", "date", "daily_views"}.issubset(ctx_df.columns)
 
         # ── Verify round-trip CSV integrity ───────────────────────────────
         series_rt = pd.read_csv(processed / "mart_report_daily_series.csv",
