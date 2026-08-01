@@ -629,9 +629,8 @@ def render_overview(data: dict[str, pd.DataFrame], filtered_mart: pd.DataFrame |
 
     # --- Data freshness banner ---
     if as_of:
-        run_id = mart["analytics_run_id"].iloc[0] if "analytics_run_id" in mart.columns and not mart.empty else "—"
         filter_note = f" · Showing **{filtered_count} of {total_count}** reports" if is_filtered else f" · **{total_count}** reports"
-        st.caption(f"Analytics as of **{as_of}** · Run: `{run_id}`{filter_note}")
+        st.caption(f"Analytics as of **{as_of}**{filter_note}")
     elif mart.empty:
         st.warning(
             "The canonical analytics mart (`outputs/analytics/mart_report_analytics.csv`) "
@@ -1012,7 +1011,11 @@ def render_forecast_section(
         st.caption(f"Forecast window: {forecast_window}")
 
     if not report_forecasts.empty:
-        st.plotly_chart(usage_forecast_chart(report_forecasts), use_container_width=True)
+        report_name_for_chart = detail["identity"].get("report_name") or report_id
+        st.plotly_chart(
+            usage_forecast_chart(report_forecasts, report_title=report_name_for_chart),
+            use_container_width=True,
+        )
         st.caption(
             "The shaded band shows the **prediction interval** — the range within which future "
             "views are expected to fall based on the model's uncertainty. It is not a confidence "
@@ -1408,6 +1411,7 @@ def render_lineage_expander(detail: dict[str, Any], data: dict[str, pd.DataFrame
     mh       = detail["model_health"]
 
     with st.expander("Lineage and technical details"):
+        # run_id is shown here, not in the top banner, to keep the main view clean
         rows: list[tuple[str, str]] = [
             ("Analytics run ID",     str(identity.get("analytics_run_id") or "—")),
             ("Analytics as of",      str(identity.get("analytics_as_of_date") or "—")),
@@ -1512,6 +1516,30 @@ def main() -> None:
     if reports.empty:
         st.warning("No report outputs were found. Run the forecasting and analytics notebooks or pipelines first.")
         return
+
+    # Load-state summary in sidebar footer
+    mart = data.get("report_analytics", pd.DataFrame())
+    portfolio_status = data.get("_portfolio_insight_status", "absent")
+    report_insight_df = data.get("insights", pd.DataFrame())
+    with st.sidebar:
+        st.divider()
+        _genai_portfolio_note = {
+            "ok": "Portfolio AI summary: available",
+            "absent": "Portfolio AI summary: not generated",
+            "empty": "Portfolio AI summary: empty",
+            "malformed_json": "Portfolio AI summary: unreadable",
+            "unexpected_structure": "Portfolio AI summary: unreadable",
+            "validation_failed": "Portfolio AI summary: validation failed",
+        }.get(str(portfolio_status), f"Portfolio AI summary: {portfolio_status}")
+        _report_genai_count = (
+            len(report_insight_df) if not report_insight_df.empty else 0
+        )
+        st.caption(
+            f"**Data status**  \n"
+            f"Canonical mart: {'loaded' if not mart.empty else 'not found'}  \n"
+            f"Report AI insights: {_report_genai_count} record(s)  \n"
+            f"{_genai_portfolio_note}"
+        )
 
     # Initialise filter version (used to clear all filter widgets atomically)
     if "_sf_v" not in st.session_state:

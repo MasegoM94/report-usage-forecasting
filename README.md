@@ -311,6 +311,43 @@ Production forecast outputs use `forecast_date`; legacy outputs use `Date`. `nor
 
 Engagement fields that cannot be shown due to small user populations are displayed as **Suppressed (privacy)** — they are never shown as zero. The `privacy_suppression_status`, `*_privacy_suppressed`, and `privacy_suppressed_fields` columns in the engagement mart control this behaviour.
 
+### Accessibility, empty states, performance, and testing (Sprint 9 Step 6)
+
+**Chart accessibility:**
+
+- Forecast chart (`usage_forecast_chart`) distinguishes actuals from forecast using **both colour and line style**: actuals are a solid blue line with circle markers; the forecast is a dashed orange line with diamond markers.
+- The prediction interval band is labelled `"Prediction interval"` in the legend — never `"Confidence interval"`.
+- The chart includes a title (with report name), `Date` x-axis label, and `Views` y-axis label.
+- Invalid date values are coerced rather than raising.
+
+**Freshness and load-state indicators:**
+
+- The overview banner shows **analytics as-of date** and filtered report count. The analytics `run_id` is moved to the lineage expander (not shown inline).
+- The sidebar footer shows: canonical mart load status, report AI insight count, portfolio AI summary status.
+
+**Terminology corrections:**
+
+| Concept | Correct | Prohibited |
+|---------|---------|-----------|
+| Forecast shaded band | Prediction interval | Confidence interval |
+| `insufficient_evidence` | Evidence-maturity status | Unhealthy or poor model |
+| High concentration | Dependency risk | Misuse |
+| Low engagement | (may still be high value) | Low business value |
+| Recommended action | Recommendation, not executed | Automated action |
+
+**Tests added:**
+
+- `tests/test_app_smoke.py` — 44 tests: module imports, `available_reports`, `build_report_detail`, all 6 GenAI states, empty states, chart builder, schema validation.
+- `tests/test_load_data_integration.py` — 33 tests: fixture-based `load_app_data` integration tests covering complete, mart-only, missing files, malformed JSON, duplicate IDs, invalid dates, forecast date normalization, privacy suppression, insight loading, lineage mismatch.
+- `tests/test_privacy_evidence.py` — 40 tests: suppression never zero, insufficient evidence not unhealthy, concentration not misuse, recommended actions not automated, invalid GenAI not trusted, no user identifiers in app data.
+- `tests/test_filter_selection_integration.py` — 38 tests: end-to-end filter → search → report selection → detail assembly pipeline.
+
+**Sprint 9 total new tests: 330** (3580 passed, 101 skipped).
+
+**Sprint completion document:** [docs/sprint_9_completion.md](docs/sprint_9_completion.md)
+
+---
+
 ### Filters, navigation, and definitions (Sprint 9 Step 5)
 
 The sidebar and portfolio overview were extended to support filterable views and consistent terminology.
