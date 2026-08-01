@@ -1,4 +1,4 @@
-"""Lightweight Streamlit reviewer app for Power BI usage forecasting outputs."""
+"""Streamlit reviewer app for Power BI report usage forecasting outputs."""
 
 from __future__ import annotations
 
@@ -31,6 +31,18 @@ from utils.portfolio_helpers import (
     portfolio_headline_metrics as _portfolio_headline_metrics,
     status_label as _status_label,
     STATUS_ORDER as _STATUS_ORDER,
+)
+from utils.report_helpers import (
+    GENAI_STATE_LABELS,
+    REPORT_GENAI_FIELDS,
+    build_report_detail,
+    classify_genai_state,
+    fmt_pct_change,
+    get_genai_field,
+    is_field_suppressed,
+    parse_report_reasons,
+    report_display_name as _report_display_name,
+    suppression_aware_metric,
 )
 
 
@@ -581,323 +593,690 @@ def render_overview(data: dict[str, pd.DataFrame]) -> None:
                          "Share of reports with reliable forecasts.")
 
 
-def render_forecast_explorer(
-    data: dict[str, pd.DataFrame], report_id: str, selected_report_name: Any = None
-) -> None:
-    st.header("Forecast Explorer")
-    forecasts = data["forecasts"]
-    report_forecasts = (
-        forecasts[forecasts["report_id"] == report_id] if "report_id" in forecasts else pd.DataFrame()
-    )
-    metric_row = row_for_report(data["metrics"], report_id)
+# ---------------------------------------------------------------------------
+# Report Explorer — section renderers
+# ---------------------------------------------------------------------------
 
-    report_display_name = selected_report_display_name(data, report_id, selected_report_name)
-    forecast_horizon = get_forecast_horizon_text(report_forecasts)
+_USAGE_STATUS_HELP = {
+    "growing_usage":             "Usage has been increasing over the recent 28-day window.",
+    "stable_regular_usage":      "Usage is broadly consistent from period to period.",
+    "stable_intermittent_usage": "Usage occurs in bursts with quiet periods in between.",
+    "bursty_usage":              "Usage spikes sharply on certain days.",
+    "declining_usage":           "Usage has been falling over the recent 28-day window.",
+    "prolonged_inactivity":      "No views have been recorded for an extended period.",
+}
+
+_FORECAST_STATUS_HELP = {
+    "growth_expected":       "The model expects usage to increase over the forecast horizon.",
+    "stable_outlook":        "The model expects usage to remain broadly stable.",
+    "reactivation_expected": "The model expects some recovery after a period of low usage.",
+    "uncertain_outlook":     "The prediction interval is wide — the direction is unclear.",
+    "decline_expected":      "The model expects usage to decrease over the forecast horizon.",
+}
+
+_MODEL_STATUS_HELP = {
+    "healthy":               "No issues detected; the model has sufficient evidence.",
+    "sufficient_evidence":   "Enough backtest history to assess model health.",
+    "insufficient_evidence": "The model has not yet accumulated enough production run history "
+                             "to assess health. This does not mean the model is unhealthy.",
+    "degraded":              "One or more model health components show warning-level issues.",
+    "failing":               "At least one model health component has a critical issue.",
+}
+
+_ENGAGEMENT_STATUS_HELP = {
+    "healthy_broad_adoption":  "A wide audience uses the report regularly.",
+    "healthy_niche_adoption":  "A small but loyal audience uses the report regularly.",
+    "growing_adoption":        "The user base is expanding.",
+    "declining_adoption":      "The active user count is falling.",
+    "elevated_lapse":          "A higher-than-typical share of users have stopped returning.",
+    "inactive":                "No recent user activity detected.",
+}
+
+_REVIEW_PRIORITY_HELP = {
+    "low":      "No immediate action is required.",
+    "medium":   "Worth monitoring; consider reviewing at the next scheduled cycle.",
+    "high":     "Requires attention soon.",
+    "critical": "Requires immediate review.",
+}
+
+_ACTION_HELP = {
+    "continue_monitoring":         "No specific action needed — keep monitoring as usual.",
+    "investigate_usage_decline":   "Review why usage is declining before next planning cycle.",
+    "review_planned_deprecation":  "Assess whether this report should be formally retired.",
+    "review_forecast_uncertainty": "High forecast uncertainty — treat the forecast directionally only.",
+    "review_model_health":         "The forecasting model has health issues that warrant investigation.",
+}
+
+
+def _section_header(label: str) -> None:
+    st.markdown(f"### {label}")
+
+
+def _kv_table(rows: list[tuple[str, str]]) -> None:
+    """Render a compact two-column key-value table."""
+    df = pd.DataFrame(rows, columns=["", ""])
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+
+def render_report_summary_header(detail: dict[str, Any]) -> None:
+    """Summary header: name, status, priority, action, evidence."""
+    identity = detail["identity"]
+    decision = detail["decision"]
+
+    name = identity.get("report_name") or identity.get("report_id") or "Unknown"
+    st.subheader(name)
+    st.caption(f"Report ID: `{identity.get('report_id', '—')}`  ·  Analytics as of: {identity.get('analytics_as_of_date', '—')}")
+
+    criticality = identity.get("criticality_level")
+    cadence = identity.get("expected_usage_cadence")
+    if criticality and str(criticality).lower() not in ("unknown", "nan", "none"):
+        st.caption(f"Criticality: **{criticality}** · Expected cadence: {cadence or '—'}")
+
+    status_raw = decision.get("overall_report_status") or "—"
+    priority_raw = decision.get("overall_review_priority") or "—"
+    action_raw = decision.get("recommended_report_action") or "—"
+    evidence_raw = decision.get("overall_evidence_status") or "—"
+
+    status_label = _status_label(status_raw)
+    priority_label = _status_label(priority_raw)
+    action_label = _status_label(action_raw)
+    evidence_label = _status_label(evidence_raw)
+
+    h_cols = st.columns(4)
+    metric_with_help(
+        h_cols[0], "Overall status", status_label,
+        "The combined report health classification based on usage, engagement, "
+        "forecast, and model health signals.",
+    )
+    metric_with_help(
+        h_cols[1], "Review priority", priority_label,
+        _REVIEW_PRIORITY_HELP.get(priority_raw, "Review urgency assigned by the analytics pipeline."),
+    )
+    metric_with_help(
+        h_cols[2], "Recommended action", action_label,
+        _ACTION_HELP.get(action_raw, "Action recommended by the analytics pipeline.")
+        + "\n\nThis is a suggested action — it has not been executed.",
+    )
+    metric_with_help(
+        h_cols[3], "Evidence status", evidence_label,
+        "How complete the analytical evidence is for this report. "
+        "'Complete' means all major evidence sources were available. "
+        "'Partial' or 'insufficient' means some signals could not be computed.",
+    )
+
+
+def render_historical_usage_section(detail: dict[str, Any]) -> None:
+    """Historical usage: recent views, change, status, streak, anomaly."""
+    _section_header("Historical usage")
+    h = detail["historical_usage"]
+
+    recent = h.get("recent_28d_views")
+    previous = h.get("previous_28d_views")
+    change_pct = h.get("usage_change_28d_pct")
+    status_raw = h.get("historical_usage_status")
+    days_since = h.get("days_since_last_use")
+    zero_streak = h.get("current_zero_usage_streak_days")
+    volatility = h.get("usage_volatility_status")
+    anomaly = h.get("latest_usage_anomaly_status")
+    sufficient = h.get("history_sufficient_28d")
+
+    insufficient = sufficient is not None and not truthy(sufficient)
+    change_display = (
+        "— (comparison unavailable)"
+        if previous is None or (pd.notna(previous) and float(previous) == 0)
+        else fmt_pct_change(change_pct)
+    )
+
+    u_cols = st.columns(4)
+    metric_with_help(
+        u_cols[0], "Recent views (28d)", fmt_number(recent),
+        "Total views in the most recent 28-day window.",
+    )
+    metric_with_help(
+        u_cols[1], "Previous views (28d)", fmt_number(previous),
+        "Total views in the 28-day window before the most recent window.",
+    )
+    metric_with_help(
+        u_cols[2], "28d change", change_display,
+        "Percentage change from the previous 28-day period to the most recent. "
+        "Shown as unavailable when the comparison period has zero views.",
+    )
+    metric_with_help(
+        u_cols[3], "Days since last use",
+        fmt_number(days_since) if days_since is not None else "—",
+        "Number of days since the most recent recorded view.",
+    )
+
+    if insufficient:
+        st.info(
+            "Usage history is not sufficient to compute all metrics. "
+            "Figures may be based on a shorter window than 28 days."
+        )
+
+    if status_raw:
+        st.markdown(
+            f"**Usage status:** {_status_label(status_raw)}  "
+            f"— {_USAGE_STATUS_HELP.get(status_raw, '')}",
+            help="Historical usage classification assigned by the analytics pipeline.",
+        )
+
+    detail_rows: list[tuple[str, str]] = []
+    if zero_streak is not None and pd.notna(zero_streak) and float(zero_streak) > 0:
+        detail_rows.append(("Zero-usage streak (days)", fmt_number(zero_streak)))
+    if volatility:
+        detail_rows.append(("Volatility", _status_label(volatility)))
+    if anomaly and str(anomaly).lower() not in ("normal", "none", "nan"):
+        detail_rows.append(("Anomaly indicator", _status_label(anomaly)))
+    if detail_rows:
+        with st.expander("Additional usage detail"):
+            _kv_table(detail_rows)
+
+
+def render_forecast_section(
+    data: dict[str, pd.DataFrame],
+    report_id: str,
+    detail: dict[str, Any],
+) -> None:
+    """Forecast chart + mart-derived outlook metrics."""
+    _section_header("Forecast")
+    fc = detail["forecast"]
+
+    forecasts = data.get("forecasts", pd.DataFrame())
+    report_forecasts = (
+        forecasts[forecasts["report_id"] == report_id]
+        if not forecasts.empty and "report_id" in forecasts.columns
+        else pd.DataFrame()
+    )
+
     forecast_window = get_forecast_window_text(report_forecasts)
-    st.subheader(f"Now viewing forecast for: {report_display_name}")
-    forecast_period = (
-        f"the {forecast_horizon}"
-        if forecast_horizon.startswith("next ")
-        else forecast_horizon
-    )
-    st.caption(
-        f"This forecast estimates expected report views over {forecast_period} based on recent "
-        "historical usage patterns."
-    )
     if forecast_window != "Not available":
         st.caption(f"Forecast window: {forecast_window}")
 
-    st.plotly_chart(usage_forecast_chart(report_forecasts), width="stretch")
+    if not report_forecasts.empty:
+        st.plotly_chart(usage_forecast_chart(report_forecasts), use_container_width=True)
+        st.caption(
+            "The shaded band shows the **prediction interval** — the range within which future "
+            "views are expected to fall based on the model's uncertainty. It is not a confidence "
+            "interval for a parameter — it describes the spread of plausible individual outcomes."
+        )
+    else:
+        st.info("No forecast rows are available for this report.")
 
-    model_help = (
-        "The model shown here is the selected forecasting model for this report. Automated model "
-        "selection may be used to choose the most suitable time-series structure, but the resulting "
-        "model is typically a statistical forecasting model such as AR, MA, ARMA, ARIMA, SARIMA, "
-        "or SARIMAX depending on the usage pattern and available history."
+    outlook_raw     = fc.get("forecast_outlook_status")
+    uncertainty_raw = fc.get("forecast_uncertainty_status")
+    interp_raw      = fc.get("forecast_interpretation_status")
+    model_raw       = fc.get("selected_model_name")
+    horizon         = fc.get("available_forecast_horizon_days")
+    total_28d       = fc.get("forecast_total_28d")
+    change_28d      = fc.get("forecast_change_vs_actual_28d_pct")
+    lower_28d       = fc.get("forecast_lower_total_28d")
+    upper_28d       = fc.get("forecast_upper_total_28d")
+
+    f_cols = st.columns(4)
+    metric_with_help(
+        f_cols[0], "Forecast outlook", _status_label(outlook_raw) if outlook_raw else "—",
+        _FORECAST_STATUS_HELP.get(outlook_raw or "", "Direction of expected usage change."),
     )
-    mae_help = (
-        "Mean Absolute Error shows the average difference between actual report views and predicted "
-        "report views. Lower is better. In business terms, a lower MAE means the forecast is "
-        "usually closer to the real usage count."
+    metric_with_help(
+        f_cols[1], "Forecast vs recent (%)", fmt_pct_change(change_28d),
+        "Percentage change in expected 28-day total views relative to the most recent 28-day actuals.",
     )
-    rmse_help = (
-        "Root Mean Squared Error measures forecast error while giving larger mistakes more weight. "
-        "Lower is better. In business terms, a high RMSE means the model sometimes makes large "
-        "forecasting errors."
+    metric_with_help(
+        f_cols[2], "Forecast uncertainty",
+        _status_label(uncertainty_raw) if uncertainty_raw else "—",
+        "Width of the prediction interval relative to the forecast. "
+        "High uncertainty means the range of plausible outcomes is wide — "
+        "the direction of the forecast may still be reliable even if the exact magnitude is not.",
     )
-    wape_help = (
-        "Weighted Absolute Percentage Error shows total forecast error as a percentage of total "
-        "actual usage. Lower is better. In business terms, it helps compare forecast quality "
-        "across reports with different usage volumes."
-    )
-    reliability_help = (
-        "Forecast reliability indicates whether the report has enough usable history and acceptable "
-        "forecast error to support a short-term forecast. It is a quality flag, not a guarantee."
+    metric_with_help(
+        f_cols[3], "Horizon (days)", fmt_number(horizon) if horizon else "—",
+        "Number of days the forecast extends from the training cutoff.",
     )
 
-    model_used = first_row_value(
-        metric_row,
-        ["selected_model", "model", "model_used", "best_model", "model_name", "ModelName"],
-    )
-    model_detail = first_row_value(metric_row, ["model_str", "model_details", "model_spec"], default=None)
-    display_model = friendly_model_name(model_used, model_detail)
-    mae = first_row_value(metric_row, ["selected_mae", "mae", "MAE"], default=None)
+    # Mart-derived accuracy metrics from the legacy metrics file
+    metric_row = row_for_report(data.get("metrics", pd.DataFrame()), report_id)
+    mae  = first_row_value(metric_row, ["selected_mae", "mae", "MAE"], default=None)
     rmse = first_row_value(metric_row, ["selected_rmse", "rmse", "RMSE"], default=None)
     wape = first_row_value(metric_row, ["selected_wape", "wape", "WAPE"], default=None)
-    reliability = reliability_label(metric_row)
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    metric_with_help(col1, "Model Used", display_model, model_help)
-    metric_with_help(col2, "MAE", fmt_number(mae, 2), mae_help)
-    metric_with_help(col3, "RMSE", fmt_number(rmse, 2), rmse_help)
-    metric_with_help(col4, "WAPE", fmt_percent(wape), wape_help)
-    metric_with_help(col5, "Forecast Reliability", reliability, reliability_help)
+    if any(v is not None for v in [mae, rmse, wape]):
+        with st.expander("Backtest accuracy metrics"):
+            st.caption(
+                "These metrics measure how closely the model tracked actual usage on held-out "
+                "backtest periods. They describe in-sample backtest performance — they do not "
+                "guarantee future forecast accuracy. Insufficient backtest evidence does not "
+                "mean the model is performing poorly."
+            )
+            acc_cols = st.columns(3)
+            metric_with_help(
+                acc_cols[0], "MAE", fmt_number(mae, 2),
+                "Mean Absolute Error: average absolute difference between actual and forecast views. "
+                "Lower is better.",
+            )
+            metric_with_help(
+                acc_cols[1], "RMSE", fmt_number(rmse, 2),
+                "Root Mean Squared Error: gives more weight to large errors. Lower is better.",
+            )
+            metric_with_help(
+                acc_cols[2], "WAPE", fmt_percent(wape),
+                "Weighted Absolute Percentage Error: total forecast error as a percentage of total "
+                "actual usage. Not suitable when actuals include zero-view days.",
+            )
 
-    if metric_row.empty:
-        st.warning("Forecast metric details are not available for this report.")
+    with st.expander("Forecast definitions"):
+        st.markdown(
+            f"**Selected model:** {friendly_model_name(model_raw)} — "
+            "Automated model selection chose this statistical model based on usage pattern and "
+            "available history."
+        )
+        st.markdown(
+            "**Prediction interval:** The shaded band in the chart. "
+            "It covers the range of plausible individual future view counts, not a parameter estimate. "
+            "A wide interval indicates greater uncertainty in the point forecast."
+        )
+        if outlook_raw:
+            st.markdown(
+                f"**Forecast outlook ({_status_label(outlook_raw)}):** "
+                + _FORECAST_STATUS_HELP.get(outlook_raw, "")
+            )
+        if interp_raw and str(interp_raw).lower() not in ("none", "nan", "normal"):
+            st.markdown(
+                f"**Forecast interpretation status:** {_status_label(interp_raw)}  "
+                "— This reflects the pipeline's assessment of how much weight to place on the "
+                "numerical forecast given current model health and evidence."
+            )
+        if lower_28d is not None and upper_28d is not None:
+            st.markdown(
+                f"**28-day prediction interval:** {fmt_number(lower_28d)} – {fmt_number(upper_28d)} views  "
+                f"(point estimate: {fmt_number(total_28d)})"
+            )
+        if fc.get("training_cutoff"):
+            st.caption(f"Training cutoff: {fc.get('training_cutoff')} · "
+                       f"Forecast as of: {fc.get('forecast_as_of_date', '—')}")
 
-    with st.expander("Model definitions"):
-        st.write(model_help)
-        st.markdown("- **AR:** Uses previous usage values to forecast future usage.")
-        st.markdown("- **MA:** Uses previous forecast errors to improve future predictions.")
-        st.markdown(
-            "- **ARMA:** Combines previous usage values and previous forecast errors."
+
+def render_model_health_section(detail: dict[str, Any]) -> None:
+    """Model health: diagnostic status, evidence, component details."""
+    _section_header("Model health")
+    mh = detail["model_health"]
+    genai = detail["genai"]
+
+    status_raw   = mh.get("model_diagnostic_status")
+    issue_raw    = mh.get("primary_model_issue")
+    evidence_mat = mh.get("production_evidence_maturity")
+    model_ev     = mh.get("model_evidence_status")
+    deterioration = mh.get("production_deterioration_status")
+
+    status_label_str = _status_label(status_raw) if status_raw else "—"
+
+    metric_with_help(
+        st, "Model diagnostic status", status_label_str,
+        _MODEL_STATUS_HELP.get(
+            status_raw or "",
+            "Overall health of the forecasting model based on backtest and production diagnostics.",
+        ),
+    )
+
+    if status_raw == "insufficient_evidence":
+        st.info(
+            "**Insufficient evidence** means the model has not yet run in production long enough "
+            "to assess its health. This is an evidence-maturity issue — it does not mean the "
+            "model is producing poor forecasts. As more production cycles accumulate, this status "
+            "will update automatically."
         )
-        st.markdown("- **ARIMA:** Extends ARMA by handling trends in the data.")
-        st.markdown(
-            "- **SARIMA:** Extends ARIMA by adding repeating seasonal patterns, such as weekly "
-            "usage behaviour."
+
+    # Model confidence note from GenAI (if valid)
+    genai_state = genai.get("state")
+    confidence_note = genai.get("model_confidence_note")
+    if confidence_note and genai_state in ("valid", "reused", "rule_based"):
+        st.markdown(f"*{confidence_note}*")
+
+    # Component detail table
+    component_rows: list[tuple[str, str]] = []
+    if issue_raw and str(issue_raw).lower() not in ("none", "nan", "no_issue"):
+        component_rows.append(("Primary model issue", _status_label(issue_raw)))
+    if mh.get("bias_status") and str(mh["bias_status"]).lower() not in ("nan", "none"):
+        component_rows.append(("Bias", _status_label(mh["bias_status"])))
+    if mh.get("residual_autocorrelation_status") and str(mh["residual_autocorrelation_status"]).lower() not in ("nan", "none"):
+        component_rows.append(("Residual autocorrelation", _status_label(mh["residual_autocorrelation_status"])))
+    if mh.get("interval_calibration_status") and str(mh["interval_calibration_status"]).lower() not in ("nan", "none"):
+        component_rows.append(("Interval calibration", _status_label(mh["interval_calibration_status"])))
+    if evidence_mat and str(evidence_mat).lower() not in ("nan", "none"):
+        component_rows.append(("Production evidence maturity", _status_label(evidence_mat)))
+    if deterioration and str(deterioration).lower() not in ("nan", "none", "no_deterioration"):
+        component_rows.append(("Production deterioration", _status_label(deterioration)))
+
+    if component_rows:
+        with st.expander("Component diagnostics"):
+            st.caption(
+                "These components measure separate aspects of model health. "
+                "Not all components are computable from backtest data alone — some require "
+                "production runs. Unavailable components do not indicate a problem."
+            )
+            _kv_table(component_rows)
+    elif status_raw == "insufficient_evidence":
+        st.caption(
+            "Component diagnostics are not yet available — they require sufficient "
+            "production run history."
         )
-        st.markdown(
-            "- **SARIMAX:** Extends SARIMA by allowing additional external variables if included."
+
+    st.caption(
+        "ℹ️ Model health reflects the forecasting process, not the report's business value. "
+        "A report with insufficient model evidence can still have reliable usage trends."
+    )
+
+
+def render_engagement_section(detail: dict[str, Any]) -> None:
+    """Engagement: unique users, returning share, lapse, concentration, status."""
+    _section_header("Engagement")
+    eng = detail["engagement"]
+
+    any_suppressed     = eng.get("_any_suppressed", False)
+    cohort_sup         = eng.get("_cohort_suppressed", False)
+    concentration_sup  = eng.get("_concentration_suppressed", False)
+    activity_sup       = eng.get("_activity_suppressed", False)
+    frequency_sup      = eng.get("_frequency_suppressed", False)
+    evidence_status    = eng.get("engagement_evidence_status")
+
+    # Unique users — always show if available (not suppressed by activity flag)
+    unique_users = eng.get("unique_users_28d")
+    users_display = (
+        "Suppressed (privacy)" if activity_sup
+        else (fmt_number(unique_users) if unique_users is not None else "—")
+    )
+
+    returning_raw    = eng.get("returning_user_share_28d")
+    lapse_raw        = eng.get("lapse_rate_28d")
+    retained_raw     = eng.get("retained_user_rate_28d")
+    top1_raw         = eng.get("top_1_user_view_share_28d")
+    views_per_user   = eng.get("views_per_active_user_28d")
+    direction        = eng.get("active_user_direction_28d")
+    overall_status   = eng.get("overall_engagement_status")
+
+    returning_display  = suppression_aware_metric(returning_raw, suppressed=cohort_sup, fmt_fn=fmt_percent)
+    lapse_display      = suppression_aware_metric(lapse_raw, suppressed=cohort_sup, fmt_fn=fmt_percent)
+    concentration_disp = suppression_aware_metric(top1_raw, suppressed=concentration_sup, fmt_fn=fmt_percent)
+
+    e_cols = st.columns(4)
+    metric_with_help(
+        e_cols[0], "Unique users (28d)", users_display,
+        "Number of distinct users who viewed this report in the last 28 days. "
+        "User identifiers are not shown.",
+    )
+    metric_with_help(
+        e_cols[1], "Returning-user share (28d)", returning_display,
+        "Share of active users who had previously viewed this report (not first-time visitors). "
+        "A high share suggests the report has an established, returning audience. "
+        "Suppressed when the user population is too small to share safely.",
+    )
+    metric_with_help(
+        e_cols[2], "Lapse rate (28d)", lapse_display,
+        "Share of previously active users who did not return in the current 28-day window. "
+        "A higher lapse rate may indicate declining relevance. "
+        "Suppressed when the cohort is too small to share safely.",
+    )
+    metric_with_help(
+        e_cols[3], "Top-user share (28d)", concentration_disp,
+        "Share of total views attributable to the single most active user. "
+        "A high value indicates concentrated usage, which may be a dependency risk. "
+        "Low concentration means usage is broadly distributed. "
+        "Suppressed when the user population is too small to share safely.",
+    )
+
+    if any_suppressed:
+        st.info(
+            "Some engagement metrics are suppressed because the user population for this "
+            "report is too small to display safely. Suppressed fields do not represent zero — "
+            "they represent unavailable evidence."
         )
-        st.markdown("- **Naive:** Uses the most recent observed usage value as the forecast.")
-        st.markdown(
-            "- **Seasonal Naive:** Uses the value from the same point in the previous season, "
-            "such as the same day last week."
+    elif evidence_status and str(evidence_status).lower() in ("insufficient", "incomplete"):
+        st.info(
+            "Engagement evidence for this report is incomplete. "
+            "Some metrics may reflect a shorter window than 28 days."
         )
+
+    if overall_status:
         st.markdown(
-            "- **Moving Average:** Uses recent average usage to smooth short-term fluctuations."
+            f"**Engagement status:** {_status_label(overall_status)}  "
+            f"— {_ENGAGEMENT_STATUS_HELP.get(overall_status, '')}",
         )
         st.caption(
-            "The aim is not to use the most complex model, but to select a model that gives a "
-            "reasonable short-term forecast for each report based on the quality and volume of "
-            "usage history."
+            "Low engagement does not imply low business value. "
+            "A niche but loyal audience may indicate a specialist report with strong relevance "
+            "to a small team."
         )
 
-    with st.expander("Forecast reliability guide"):
-        st.write(reliability_help)
+    with st.expander("Additional engagement detail"):
+        extra_rows: list[tuple[str, str]] = []
+        if retained_raw is not None:
+            extra_rows.append(("Retained-user rate (28d)",
+                               suppression_aware_metric(retained_raw, suppressed=cohort_sup,
+                                                        fmt_fn=fmt_percent)))
+        if views_per_user is not None:
+            extra_rows.append(("Views per active user (28d)",
+                               suppression_aware_metric(views_per_user, suppressed=frequency_sup,
+                                                        fmt_fn=lambda v: fmt_number(v, 1))))
+        if direction and str(direction).lower() not in ("nan", "none"):
+            extra_rows.append(("Active-user direction", _status_label(direction)))
+        if extra_rows:
+            _kv_table(extra_rows)
+        else:
+            st.caption("No additional engagement detail is available.")
+
+
+def render_diagnostics_section(detail: dict[str, Any]) -> None:
+    """Diagnostics and decision: primary diagnostic, reasons, action."""
+    _section_header("Diagnostics and decision")
+    dec = detail["decision"]
+
+    primary_diag = dec.get("primary_diagnostic")
+    diag_cat     = dec.get("primary_diagnostic_category")
+    action_raw   = dec.get("recommended_report_action")
+    reasons_raw  = dec.get("report_reasons")
+
+    if primary_diag and str(primary_diag).lower() not in ("none", "nan"):
+        st.markdown(f"**Primary diagnostic:** {_status_label(primary_diag)}")
+        if diag_cat and str(diag_cat).lower() not in ("none", "nan"):
+            st.caption(f"Category: {_status_label(diag_cat)}")
+
+    if action_raw:
+        action_label = _status_label(action_raw)
+        help_text = _ACTION_HELP.get(action_raw, "")
         st.markdown(
-            "- **Reliable / High:** The forecast passed the project's quality checks and can be "
-            "interpreted with more confidence."
-        )
-        st.markdown(
-            "- **Medium / Caution:** The forecast may be useful directionally but should be "
-            "interpreted carefully."
-        )
-        st.markdown(
-            "- **Low / Not reliable:** The report has limited, sparse, volatile, or poorly "
-            "performing forecast results, so the forecast should not be used as a strong signal."
+            f"**Recommended action:** {action_label}",
+            help=help_text + "\n\nThis recommendation was produced deterministically "
+                             "by the analytics pipeline. It is a suggestion — it has not been executed.",
         )
 
+    reasons = parse_report_reasons(reasons_raw)
+    if reasons:
+        with st.expander("Diagnostic reasons"):
+            st.caption(
+                "These are the individual signals that contributed to the overall status "
+                "and recommended action. Each reason uses the pipeline's internal terminology."
+            )
+            for r in reasons:
+                st.markdown(f"- `{r}`")
 
-def _suppressed_or(value: Any, suppressed: bool, label: str = "Suppressed (privacy)") -> str:
-    """Return *label* when *suppressed* is true, otherwise format *value*."""
-    if suppressed:
-        return label
-    return fmt_percent(value)
 
+def render_report_genai_section(detail: dict[str, Any]) -> None:
+    """Report-level GenAI narrative using Sprint-8 fields."""
+    _section_header("AI summary")
+    genai = detail["genai"]
+    state = genai.get("state", "missing")
+    state_label = GENAI_STATE_LABELS.get(state, state)
 
-def _engagement_evidence_note(eng_row: "pd.Series[Any]") -> str | None:
-    """Return a human-readable explanation when engagement evidence is limited."""
-    if eng_row.empty:
-        return "No engagement data is available for this report."
-    status = eng_row.get("engagement_evidence_status", "")
-    suppression = eng_row.get("privacy_suppression_status", "not_suppressed")
-    if suppression not in ("not_suppressed", None, ""):
-        field_count = eng_row.get("privacy_suppressed_field_count", "")
-        return (
-            f"Some engagement fields are privacy-suppressed ({field_count} field(s)). "
-            "Suppressed values are not shown to protect user privacy."
+    if state == "missing":
+        st.info("No AI summary is available for this report. Run the GenAI pipeline to generate one.")
+        return
+
+    if state == "invalid":
+        st.warning(
+            "The AI summary for this report did not pass validation checks and is not shown. "
+            "The deterministic analytics sections above remain authoritative."
         )
-    if str(status).startswith("incomplete") or str(status) == "insufficient":
-        missing = eng_row.get("missing_engagement_evidence", "")
-        return f"Engagement evidence is incomplete: {missing}." if missing else "Engagement evidence is incomplete."
-    return None
+        return
+
+    # Generation-status label
+    if state == "rule_based":
+        st.caption(
+            "ℹ️ This summary was produced by the deterministic rule-based fallback — "
+            "not by a live language model. It reflects validated analytics."
+        )
+    elif state == "fallback":
+        st.caption(
+            "⚠️ The AI model call failed. This is a fallback summary based on validated analytics."
+        )
+    elif state == "reused":
+        st.caption("This validated summary was reused from a previous run (inputs unchanged).")
+
+    executive = genai.get("executive_summary")
+    if executive:
+        st.markdown(f"**{executive}**")
+
+    left, right = st.columns(2)
+    with left:
+        usage_insight = genai.get("usage_insight")
+        if usage_insight:
+            st.markdown("**Usage**")
+            st.write(usage_insight)
+        forecast_insight = genai.get("forecast_insight")
+        if forecast_insight:
+            st.markdown("**Forecast**")
+            st.write(forecast_insight)
+    with right:
+        engagement_insight = genai.get("engagement_insight")
+        if engagement_insight:
+            st.markdown("**Engagement**")
+            st.write(engagement_insight)
+        recommended_action = genai.get("recommended_action")
+        if recommended_action:
+            st.markdown("**Recommended action**")
+            if isinstance(recommended_action, list):
+                for item in recommended_action:
+                    st.markdown(f"- {item}")
+            else:
+                st.write(recommended_action)
+
+    evidence_limitations = genai.get("evidence_limitations")
+    if evidence_limitations:
+        with st.expander("Evidence limitations"):
+            if isinstance(evidence_limitations, list):
+                for item in evidence_limitations:
+                    st.markdown(f"- {item}")
+            else:
+                st.write(evidence_limitations)
+
+    with st.expander("AI summary metadata"):
+        meta_cols = st.columns(2)
+        meta_items = [
+            ("Generation", state_label),
+            ("Validation status", genai.get("validation_status") or "—"),
+            ("Analytics as of", genai.get("analytics_as_of_date") or "—"),
+            ("Prompt version", genai.get("prompt_version") or "—"),
+            ("Model", genai.get("model_name") or "—"),
+            ("Generated at", str(genai.get("generated_at") or "")[:19] or "—"),
+        ]
+        for i, (label, value) in enumerate(meta_items):
+            meta_cols[i % 2].caption(f"**{label}:** {value}")
 
 
-def render_behaviour_insights(
+def render_lineage_expander(detail: dict[str, Any], data: dict[str, pd.DataFrame], report_id: str) -> None:
+    """Technical lineage details in an expander."""
+    identity = detail["identity"]
+    fc       = detail["forecast"]
+    genai    = detail["genai"]
+    mh       = detail["model_health"]
+
+    with st.expander("Lineage and technical details"):
+        rows: list[tuple[str, str]] = [
+            ("Analytics run ID",     str(identity.get("analytics_run_id") or "—")),
+            ("Analytics as of",      str(identity.get("analytics_as_of_date") or "—")),
+            ("Forecast as of",       str(fc.get("forecast_as_of_date") or "—")),
+            ("Training cutoff",      str(fc.get("training_cutoff") or "—")),
+        ]
+        if mh.get("model_evidence_status"):
+            rows.append(("Model evidence status", str(mh["model_evidence_status"])))
+        if genai.get("genai_run_id"):
+            rows.append(("GenAI run ID",    str(genai.get("genai_run_id"))))
+        if genai.get("prompt_version"):
+            rows.append(("Prompt version",  str(genai.get("prompt_version"))))
+        if genai.get("model_name"):
+            rows.append(("AI model",        str(genai.get("model_name"))))
+        if genai.get("generated_at"):
+            rows.append(("Generated at",    str(genai.get("generated_at"))[:19]))
+        if genai.get("validation_status"):
+            rows.append(("Validation status", str(genai.get("validation_status"))))
+        _kv_table(rows)
+
+
+def render_report_explorer(
     data: dict[str, pd.DataFrame],
     report_id: str,
     selected_report_name: Any = None,
-    total_days: int | None = None,
 ) -> None:
-    st.header("Behaviour Insights")
-    report_display_name = selected_report_display_name(data, report_id, selected_report_name)
-    st.subheader(f"Now viewing behaviour insights for: {report_display_name}")
-    segment_row = row_for_report(data["segments"], report_id)
-    diagnostic_row = row_for_report(data["diagnostics"], report_id)
+    """Unified report-level explorer — renders all report sections in sequence."""
+    mart     = data.get("report_analytics", pd.DataFrame())
+    mart_row = row_for_report(mart, report_id)
+    eng_row  = row_for_report(data.get("engagement", pd.DataFrame()), report_id)
+    insight_row = row_for_report(data.get("insights", pd.DataFrame()), report_id)
 
-    # Engagement fields come from the engagement mart (report-level aggregates only).
-    # Fields that were previously read from report_features (repeat_rate,
-    # top_1_user_view_share, days_active) were removed in the v2 schema migration
-    # and now live in mart_report_engagement.csv under updated names.
-    eng_row = row_for_report(data.get("engagement", pd.DataFrame()), report_id)
+    # Fall back to name from sidebar when mart is missing
+    if mart_row.empty and selected_report_name:
+        mart_row = pd.Series({"report_id": report_id, "report_name": selected_report_name})
 
-    def _is_suppressed(field: str) -> bool:
-        """True when the engagement mart explicitly marks this field as suppressed."""
-        if eng_row.empty:
-            return False
-        fields_str = str(eng_row.get("privacy_suppressed_fields", "") or "")
-        return field in fields_str
+    detail = build_report_detail(mart_row, eng_row, insight_row)
 
-    # Active days (active_usage_days_28d: distinct days with ≥1 view in last 28 days)
-    days_active_raw = eng_row.get("active_usage_days_28d") if not eng_row.empty else None
-    activity_suppressed = _is_suppressed("activity") or (
-        not eng_row.empty and truthy(eng_row.get("activity_privacy_suppressed"))
-    )
-    if activity_suppressed:
-        days_active_display = "Suppressed (privacy)"
-    elif pd.notna(days_active_raw) and total_days is not None:
-        days_active_display = f"{fmt_number(days_active_raw)} / {total_days} days"
+    # ── 1. Summary header ──────────────────────────────────────────────────
+    if not mart_row.empty:
+        render_report_summary_header(detail)
     else:
-        days_active_display = fmt_number(days_active_raw)
-
-    # Returning-user share (repeat_view_user_share_28d: share of users who viewed >1 time)
-    cohort_suppressed = _is_suppressed("cohort") or (
-        not eng_row.empty and truthy(eng_row.get("cohort_privacy_suppressed"))
-    )
-    returning_share_raw = eng_row.get("returning_user_share_28d") if not eng_row.empty else None
-    returning_share_display = _suppressed_or(returning_share_raw, cohort_suppressed)
-
-    # Top-user concentration (top_1_user_view_share_28d: share of views by single top user)
-    concentration_suppressed = _is_suppressed("concentration") or (
-        not eng_row.empty and truthy(eng_row.get("concentration_privacy_suppressed"))
-    )
-    top_user_raw = eng_row.get("top_1_user_view_share_28d") if not eng_row.empty else None
-    top_user_display = _suppressed_or(top_user_raw, concentration_suppressed)
-
-    col1, col2, col3, col4 = st.columns(4)
-    metric_with_help(
-        col1,
-        "Report segment",
-        segment_row.get("report_segment", "N/A"),
-        "A category that describes how this report is being used overall. "
-        "It helps you quickly understand where a report sits in its usage lifecycle.\n\n"
-        "Possible segments:\n\n"
-        "High Value — the report has strong viewership and a broad, active audience.\n\n"
-        "Niche — the report has a loyal or specialist audience, often with healthy repeat visits or concentrated usage.\n\n"
-        "At Risk — usage is declining and the report shows signs of low engagement or performance issues.\n\n"
-        "Inactive — the report has had little to no recent activity.",
-    )
-    metric_with_help(
-        col2,
-        "Returning users (28d)",
-        returning_share_display,
-        "The share of active users in the last 28 days who had previously viewed this report "
-        "(returning, not first-time visitors). "
-        "A high share suggests the report is genuinely useful and people keep coming back. "
-        "A low share may mean most users visited only once.\n\n"
-        "Shown as 'Suppressed (privacy)' when the user population is too small to share safely.",
-    )
-    metric_with_help(
-        col3,
-        "Top user share (28d)",
-        top_user_display,
-        "The share of total report views in the last 28 days attributable to the single most "
-        "active user. A high value means one person drives most of the traffic, which is a "
-        "dependency risk if that user changes roles or leaves. A lower value suggests broader, "
-        "more resilient usage.\n\n"
-        "Shown as 'Suppressed (privacy)' when the user population is too small to share safely.",
-    )
-    metric_with_help(
-        col4,
-        "Active days (28d)",
-        days_active_display,
-        "The number of distinct days on which this report received at least one view during "
-        "the last 28 days. More active days generally indicate a report that is regularly "
-        "consulted rather than viewed in occasional bursts.\n\n"
-        "Shown as 'Suppressed (privacy)' when activity data cannot be shared safely.",
-    )
-
-    # Surface evidence or suppression limitations above the diagnostics section
-    evidence_note = _engagement_evidence_note(eng_row)
-    if evidence_note:
-        st.info(evidence_note)
-
-    st.subheader("Diagnostic summary")
-    st.write(diagnostic_row.get("diagnostic_summary", "No diagnostic summary available."))
-
-    st.subheader("Diagnostic flags")
-    flags = diagnostics_flags(diagnostic_row)
-    if flags.empty:
-        st.caption("No diagnostics available for this report.")
-    else:
-        st.dataframe(flags, hide_index=True, width="stretch")
-
-    with st.expander("Diagnostic flag definitions"):
-        st.markdown(
-            "**Performance Issue** — The report is loading slowly compared to other reports "
-            "and its usage is also declining. Slow load times can discourage users from returning, "
-            "so this combination is worth investigating."
+        st.subheader(selected_report_name or report_id)
+        st.caption(f"Report ID: `{report_id}`")
+        st.warning(
+            "This report is not present in the canonical analytics mart. "
+            "Detailed analytics sections are unavailable. "
+            "Run the analytics pipeline to generate mart outputs."
         )
-        st.markdown(
-            "**Engagement Issue** — Users are not returning to this report as frequently as "
-            "they do for others, and overall usage is declining. This may suggest the report "
-            "is not meeting its audience's needs or has become less relevant over time."
-        )
-        st.markdown(
-            "**Dependency Risk** — A very large share of the report's views comes from a "
-            "small number of users. If those users change roles or leave, usage could drop "
-            "significantly. Broader adoption would reduce this risk."
-        )
-        st.markdown(
-            "**Inactive Risk** — The report has had little to no recent activity. It may "
-            "have been replaced by another report, fallen out of use, or no longer be relevant "
-            "to its original audience."
-        )
-
-
-def render_ai_insights(
-    data: dict[str, pd.DataFrame], report_id: str, selected_report_name: Any = None
-) -> None:
-    st.header("AI Insights")
-    report_display_name = selected_report_display_name(data, report_id, selected_report_name)
-    st.subheader(f"Now viewing AI insights for: {report_display_name}")
-    insight_row = row_for_report(data["insights"], report_id)
-    if insight_row.empty:
-        st.caption("No AI insight file found for this report.")
         return
 
-    st.subheader("At a glance")
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.write(insight_row.get("forecast_summary", "No summary available."))
-    with col2:
-        metric_with_help(
-            col2,
-            "Confidence",
-            str(insight_row.get("confidence", "N/A")).title(),
-            "How much weight to place on the insight for this report. "
-            "This is not a measure of forecast accuracy — it reflects how well-supported "
-            "the insight is based on the available data.\n\n"
-            "High — the report has reliable forecast data and clear usage signals to draw from.\n\n"
-            "Medium — the forecast passed quality checks but some signals are limited or mixed.\n\n"
-            "Low — the forecast did not pass reliability checks or the report has limited history, "
-            "so the insight should be treated as indicative only.",
+    st.divider()
+
+    # ── 2. Deterministic review action (pulled out prominently) ────────────
+    action_raw = detail["decision"].get("recommended_report_action")
+    if action_raw and action_raw != "continue_monitoring":
+        st.info(
+            f"**Review action:** {_status_label(action_raw)}  \n"
+            + _ACTION_HELP.get(action_raw, "")
+            + "\n\n*This recommendation was produced deterministically and has not been executed.*"
         )
 
+    # ── 3. AI summary ─────────────────────────────────────────────────────
+    render_report_genai_section(detail)
     st.divider()
 
-    st.subheader("Recommendations")
-    st.caption("Suggested actions based on the usage patterns and forecast for this report.")
-    list_items(insight_row.get("recommended_actions"))
-
+    # ── 4. Historical usage ────────────────────────────────────────────────
+    render_historical_usage_section(detail)
     st.divider()
 
-    with st.expander("Hypotheses"):
-        st.caption("Possible explanations for the usage patterns observed in this report.")
-        list_items(insight_row.get("hypotheses"))
+    # ── 5. Forecast ───────────────────────────────────────────────────────
+    render_forecast_section(data, report_id, detail)
+    st.divider()
+
+    # ── 6. Model health ───────────────────────────────────────────────────
+    render_model_health_section(detail)
+    st.divider()
+
+    # ── 7. Engagement ─────────────────────────────────────────────────────
+    render_engagement_section(detail)
+    st.divider()
+
+    # ── 8. Diagnostics and evidence ───────────────────────────────────────
+    render_diagnostics_section(detail)
+    st.divider()
+
+    # ── 9. Lineage ────────────────────────────────────────────────────────
+    render_lineage_expander(detail, data, report_id)
 
 
 def main() -> None:
@@ -934,22 +1313,11 @@ def main() -> None:
     st.sidebar.write(selected_report["report_name"])
     st.sidebar.caption(report_id)
 
-    tabs = st.tabs(["Overview", "Forecast Explorer", "Behaviour Insights", "AI Insights"])
+    tabs = st.tabs(["Portfolio Overview", "Report Explorer"])
     with tabs[0]:
         render_overview(data)
     with tabs[1]:
-        render_forecast_explorer(data, report_id, selected_report.get("report_name"))
-    with tabs[2]:
-        start_date = analysis_period.get("start_date")
-        end_date = analysis_period.get("end_date")
-        total_days = (
-            int((end_date - start_date).days) + 1
-            if start_date is not None and end_date is not None
-            else None
-        )
-        render_behaviour_insights(data, report_id, selected_report.get("report_name"), total_days)
-    with tabs[3]:
-        render_ai_insights(data, report_id, selected_report.get("report_name"))
+        render_report_explorer(data, report_id, selected_report.get("report_name"))
 
 
 if __name__ == "__main__":

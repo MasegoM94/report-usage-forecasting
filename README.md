@@ -311,6 +311,42 @@ Production forecast outputs use `forecast_date`; legacy outputs use `Date`. `nor
 
 Engagement fields that cannot be shown due to small user populations are displayed as **Suppressed (privacy)** — they are never shown as zero. The `privacy_suppression_status`, `*_privacy_suppressed`, and `privacy_suppressed_fields` columns in the engagement mart control this behaviour.
 
+### Report explorer (Sprint 9 Step 4)
+
+The **Report Explorer** tab consolidates all report-level detail into a single, ordered view. It replaced the former three separate tabs (Forecast Explorer, Behaviour Insights, AI Insights).
+
+**Canonical inputs:**
+
+| Source | File | Purpose |
+|--------|------|---------|
+| Canonical mart | `outputs/analytics/mart_report_analytics.csv` | Summary header, all status fields, historical usage, forecast outlook, model health, engagement, decision |
+| Engagement mart | `outputs/analytics/mart_report_engagement.csv` | Supplementary engagement aggregates and suppression flags |
+| Forecast rows | `outputs/forecasts/production_forecasts_latest.csv` (or legacy) | Forecast chart |
+| Report insight | `outputs/insights/report_ai_insights.json` | Report-level GenAI narrative (Sprint 8 schema) |
+
+**Sections rendered (in order):**
+
+1. **Summary header** — report name, ID, analytics as-of date, overall status, review priority, recommended action, evidence status.
+2. **Review action banner** — shown only when `recommended_report_action ≠ continue_monitoring`.
+3. **AI summary** — Sprint-8 fields: `executive_summary`, `usage_insight`, `engagement_insight`, `forecast_insight`, `model_confidence_note`, `recommended_action`, `evidence_limitations`. Handles all GenAI states: `valid`, `reused`, `rule_based`, `fallback`, `invalid`, `missing`.
+4. **Historical usage** — recent and previous 28d views, percentage change, usage status, days since last use, zero-usage streak, volatility, anomaly.
+5. **Forecast** — chart with prediction interval (correctly labelled, not a confidence interval), outlook status, uncertainty, forecast vs recent change, horizon, backtest accuracy (MAE/RMSE/WAPE).
+6. **Model health** — diagnostic status, `insufficient_evidence` explained as evidence-maturity not model failure, component diagnostics when available.
+7. **Engagement** — unique users, returning-user share, lapse rate, top-user share, engagement status. Privacy-suppressed fields shown as `Suppressed (privacy)` never as zero. Concentration not described as misuse; low engagement not described as low value.
+8. **Diagnostics and decision** — primary diagnostic, recommended action, pipeline reasons (parseable `key:value | …` format).
+9. **Lineage expander** — analytics run ID, forecast as-of, training cutoff, GenAI run ID, prompt version.
+
+**Report selector:**
+- Backed by the canonical mart; falls back to legacy sources when mart is absent.
+- One selectable item per `report_id`.
+- Duplicate display names disambiguated by appending the `report_id`.
+- Selector state preserved across reruns.
+
+**Analytical separation:**
+Historical usage, engagement, forecast outlook, model health, and decision support are kept in separate sections. No combined health score is computed or displayed.
+
+**Pure-logic helpers** (no Streamlit dependency, fully testable): `src/app/utils/report_helpers.py`.
+
 ### Portfolio overview (Sprint 9 Step 3)
 
 The **Portfolio Overview** tab reads from two canonical outputs:

@@ -676,11 +676,33 @@ def load_app_data(root: Path | None = None) -> dict[str, pd.DataFrame]:
 
 
 def available_reports(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Build the sidebar report list from every artifact that identifies reports."""
-    frames = []
-    for df in data.values():
+    """Build the sidebar report list, preferring the canonical analytics mart.
+
+    The canonical mart (``data["report_analytics"]``) is used when it contains
+    both ``report_id`` and ``report_name``.  All other sources are used only to
+    supplement reports missing from the mart.
+
+    Guarantees:
+    - One row per ``report_id``.
+    - Deterministic alphabetical ordering by ``report_id``.
+    - ``report_name`` falls back to ``report_id`` when absent.
+    - Duplicate display names are disambiguated by appending the ``report_id``.
+    """
+    # Canonical source first
+    mart = data.get("report_analytics", pd.DataFrame())
+    frames: list[pd.DataFrame] = []
+    if not mart.empty and {"report_id", "report_name"}.issubset(mart.columns):
+        frames.append(mart[["report_id", "report_name"]].copy())
+
+    # Legacy sources fill gaps (not overrides)
+    for key, df in data.items():
+        if key in ("report_analytics", "_portfolio_insight", "_portfolio_insight_status",
+                   "_monitoring"):
+            continue
+        if not isinstance(df, pd.DataFrame):
+            continue
         if {"report_id", "report_name"}.issubset(df.columns):
-            frames.append(df[["report_id", "report_name"]])
+            frames.append(df[["report_id", "report_name"]].copy())
 
     if not frames:
         return pd.DataFrame(columns=["report_id", "report_name", "label"])
@@ -688,10 +710,19 @@ def available_reports(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
     reports = (
         pd.concat(frames, ignore_index=True)
         .dropna(subset=["report_id"])
-        .drop_duplicates(subset=["report_id"])
+        .drop_duplicates(subset=["report_id"])   # first occurrence wins (mart is first)
         .sort_values("report_id")
     )
     reports["report_name"] = reports["report_name"].fillna(reports["report_id"])
+
+    # Disambiguate identical display names
+    name_counts = reports["report_name"].value_counts()
+    dup_names = name_counts[name_counts > 1].index
+    mask = reports["report_name"].isin(dup_names)
+    reports.loc[mask, "report_name"] = (
+        reports.loc[mask, "report_name"] + " (" + reports.loc[mask, "report_id"] + ")"
+    )
+
     reports["label"] = reports["report_name"] + " (" + reports["report_id"] + ")"
     return reports.reset_index(drop=True)
 
