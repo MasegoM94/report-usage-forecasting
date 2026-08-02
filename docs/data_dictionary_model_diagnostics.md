@@ -1,6 +1,6 @@
-# Data Dictionary — Sprint 5 Diagnostic Outputs
+# Data Dictionary — Model Diagnostic Outputs
 
-All files are written to `outputs/diagnostics/` by the Sprint 5 pipeline.
+All files are written to `outputs/diagnostics/` by the model diagnostics pipeline.
 Files use `_latest.csv` suffix to indicate the most recent pipeline run.
 
 Sign convention: `residual = actual - forecast` (positive = underforecast) unless stated otherwise.
@@ -368,7 +368,7 @@ output consumed by downstream notebooks, GenAI layer, and Streamlit app.
 | `n_valid_backtest_folds` | integer | Valid backtest folds used |
 | `n_production_errors` | integer | Valid production error observations |
 | `recommended_action` | string | `monitor`, `review`, `consider_retraining`, `collect_more_data`, `investigate_pipeline` |
-| `automatic_retraining_triggered` | boolean | Always `False` in Sprint 5 |
+| `automatic_retraining_triggered` | boolean | Always `False` |
 | `diagnostic_run_timestamp` | datetime | When this run was computed |
 
 **Status values — model_diagnostic_status:**
