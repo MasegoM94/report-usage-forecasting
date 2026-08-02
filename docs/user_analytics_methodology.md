@@ -171,9 +171,7 @@ To avoid 100% concentration for single-user reports, the top-10% group size is c
 top_10pct_count = max(1, min(ceil(0.10 * unique_users_28d), 5))
 ```
 
-The ceiling of 5 ensures that for large reports, the "top 10%" group is not dominated by a
-handful of extreme users in a misleading way, and maintains comparability across reports of
-different sizes.
+The ceiling of 5 ensures that for large reports, the "top 10%" group is not dominated by a handful of extreme users in a misleading way, and maintains comparability across reports of different sizes.
 
 ---
 
@@ -311,9 +309,7 @@ a small number of regular users represents expected and healthy usage.
 
 ## 20. New-Adoption Maturity Policy
 
-Reports within their first 14 days of activity are classified as `newly_active` regardless of
-engagement signals. This prevents premature classification of reports that haven't had time to
-establish baseline metrics.
+Reports within their first 14 days of activity are classified as `newly_active` regardless of engagement signals. This prevents premature classification of reports that haven't had time to establish baseline metrics.
 
 | Days since first activity | Maturity status |
 |---------------------------|-----------------|

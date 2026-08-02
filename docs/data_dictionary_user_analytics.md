@@ -1,6 +1,6 @@
-# Data Dictionary — Sprint 6 User Analytics Outputs
+# Data Dictionary — User Analytics Outputs
 
-This document describes all nine output files produced by the Sprint 6 user analytics pipeline.
+This document describes all nine output files produced by the user analytics pipeline.
 All outputs are **report-level**. No file contains user keys, email addresses, display names,
 or any other direct identifier. `user_key` (a pseudonymous surrogate) appears only in
 `mart_report_user_daily.csv` and is excluded from all downstream aggregated outputs.
@@ -9,7 +9,7 @@ or any other direct identifier. `user_key` (a pseudonymous surrogate) appears on
 
 ## 1. `outputs/analytics/mart_report_user_daily.csv`
 
-**Purpose**: Canonical report-user-day mart. Foundational input for all Sprint 6 engagement metrics.
+**Purpose**: Canonical report-user-day mart. Foundational input for all user analytics engagement metrics.
 
 **Grain**: one row per (analytics_run_id, report_id, user_key, usage_date) with positive usage.
 
@@ -288,7 +288,7 @@ effective_user_share_28d are set to null when active_user_count < PrivacyConfig.
 
 ## 9. `outputs/analytics/mart_report_engagement.csv`
 
-**Purpose**: Final, canonical engagement mart for Sprint 6. One row per report, containing all
+**Purpose**: Final, canonical engagement mart. One row per report, containing all
 engagement status flags, issue classifications, and recommended actions.
 
 **Grain**: one row per (analytics_run_id, report_id).
