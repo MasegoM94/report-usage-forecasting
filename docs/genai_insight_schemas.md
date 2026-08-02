@@ -52,18 +52,18 @@ Only the 34-field `INSIGHT_CONTEXT_ALLOWLIST` is passed to the LLM — all other
 
 | Field | Type | Meaning | Null behaviour | Privacy |
 |-------|------|---------|----------------|---------|
-| `unique_users_28d` | float | Count of distinct users in the 28-day window | **Null when privacy-suppressed** | Suppressed if count < 5 |
-| `active_user_direction_28d` | string | Directional trend in active users (`growing`, `stable`, `declining`, `inactive`) | **Null when privacy-suppressed** | Suppressed if count < 5 |
-| `returning_user_share_28d` | float (0–1) | Fraction of views from returning users | **Null when privacy-suppressed** | Suppressed if count < 5 |
-| `retained_user_rate_28d` | float (0–1) | Fraction of prior-period users retained in the current period | **Null when privacy-suppressed** | Suppressed if count < 5 |
-| `lapse_rate_28d` | float (0–1) | Fraction of active users who lapsed in the current period | **Null when privacy-suppressed** | Suppressed if count < 5 |
-| `overall_engagement_status` | string | Classified engagement health (e.g., `healthy_broad_adoption`, `declining_adoption`, `elevated_lapse`) | **Null when privacy-suppressed or inactive** | — |
+| `unique_users_28d` | float | Count of distinct users in the 28-day window | May be null when no valid user data exists | Not privacy-suppressed — count fields are never suppressed (`user_engagement_metrics.py`) |
+| `active_user_direction_28d` | string | Directional trend in active users (`growing`, `stable`, `declining`, `inactive`) | May be null when comparison history is insufficient | Not privacy-suppressed — derived from a count comparison, not a per-user share or ratio (`user_engagement_metrics.py`) |
+| `returning_user_share_28d` | float (0–1) | Fraction of views from returning users | **Null when privacy-suppressed** | Null when `unique_users_28d` < 5 (`UserEngagementMetricsConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS`, `user_engagement_metrics.py`) |
+| `retained_user_rate_28d` | float (0–1) | Fraction of prior-period users retained in the current period | **Null when privacy-suppressed** | Null when active cohort user count < 5 (`CohortConfig.MIN_USERS_FOR_COHORT_BREAKDOWN`, `user_engagement_cohorts.py`) |
+| `lapse_rate_28d` | float (0–1) | Fraction of active users who lapsed in the current period | **Null when privacy-suppressed** | Null when prior-period user count < 5 (`CohortConfig.MIN_USERS_FOR_COHORT_BREAKDOWN`, `user_engagement_cohorts.py`) |
+| `overall_engagement_status` | string | Classified engagement health (e.g., `healthy_broad_adoption`, `declining_adoption`, `elevated_lapse`) | Never null | Never null due to privacy — takes value `privacy_limited` when any upstream suppression flag is raised and no higher-priority condition applies (`classify_overall_engagement_status()`, `report_engagement_status.py`) |
 
 ### 1.6 Dependency
 
-| Field | Type | Meaning | Null behaviour |
-|-------|------|---------|----------------|
-| `dependency_status` | string | Dependency concentration classification (e.g., `broadly_distributed_stable_dependency`, `moderately_concentrated_stable_dependency`) | May be null |
+| Field | Type | Meaning | Null behaviour | Privacy |
+|-------|------|---------|----------------|---------|
+| `dependency_status` | string | Dependency concentration classification (e.g., `broadly_distributed_stable_dependency`, `moderately_concentrated_stable_dependency`) | Never null — returns sentinel string `unavailable` when concentration data is absent or suppressed | Not null — uses string sentinel `unavailable` when upstream `concentration_status` is null or `privacy_suppressed` (concentration suppressed at `ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS = 5`, `user_concentration_metrics.py`; see `_classify_dependency()` in `report_engagement_mart.py`) |
 
 ### 1.7 Decision support
 
@@ -88,9 +88,26 @@ Only the 34-field `INSIGHT_CONTEXT_ALLOWLIST` is passed to the LLM — all other
 
 ### 1.9 Privacy rules
 
-- Fields that are null due to privacy suppression are passed as `null` in the context, not omitted.
+The GenAI layer consumes upstream privacy-filtered mart values. It does not apply suppression itself and must not reverse, infer, or reconstruct suppressed values.
+
+**Fields never null due to privacy (no suppression applied):**
+- `unique_users_28d` — a count field; count fields are never suppressed because they cannot re-identify individuals on their own.
+- `active_user_direction_28d` — a directional status derived from a count comparison, not a per-user ratio; not subject to share-field suppression.
+- `overall_engagement_status` — never null; uses the status value `privacy_limited` when any upstream suppression flag is raised and no higher-priority condition applies.
+- `dependency_status` — never null; uses the sentinel string `unavailable` when the upstream concentration status is null or `privacy_suppressed`.
+
+**Fields null when upstream suppression applies (threshold 5 in all cases):**
+- `returning_user_share_28d` — suppressed when `unique_users_28d < UserEngagementMetricsConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS` (default 5) in `user_engagement_metrics.py`.
+- `retained_user_rate_28d`, `lapse_rate_28d` — suppressed when the relevant cohort user count falls below `CohortConfig.MIN_USERS_FOR_COHORT_BREAKDOWN` (default 5) in `user_engagement_cohorts.py`.
+
+No field in the `INSIGHT_CONTEXT_ALLOWLIST` uses a threshold-3 gate. Share and rate fields are all gated at threshold 5 by their respective upstream modules.
+
+**Consequence for small-user-count reports:** A report with 3–4 active users has `returning_user_share_28d`, `retained_user_rate_28d`, and `lapse_rate_28d` set to null, while `unique_users_28d`, `active_user_direction_28d`, and `overall_engagement_status` remain populated. The context is never completely empty of engagement information due to privacy suppression.
+
+**LLM handling:**
+- Null context fields are passed as `null`, not omitted.
 - The LLM must not infer, estimate, or reconstruct suppressed values.
-- `privacy_suppression_status` and `privacy_suppressed_fields` are always passed so the LLM can disclose the limitation.
+- `privacy_suppression_status` and `privacy_suppressed_fields` are always passed so the LLM can acknowledge limitations.
 - No individual user identifiers (`user_id`, email, name) are passed.
 
 ---
