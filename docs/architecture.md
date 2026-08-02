@@ -206,7 +206,7 @@ is null for still-active reports. Days before `launch_date` and after
 
 ---
 
-## Sprint 6 — User Engagement Analytics Data Flow
+## User Analytics Data Flow
 
 ```
 Privacy-safe report usage fact (mart_report_user_daily)
@@ -243,21 +243,21 @@ Deterministic engagement status classification
         v
 mart_report_engagement (report-level only; no user_key column)
         |
-        +---> Sprint 7 report analytics (planned)
-        +---> Streamlit dashboard (future consumer)
-        +---> GenAI insights layer (future consumer)
+        +---> Report analytics pipeline (src/analytics/report_analytics_mart.py)
+        +---> Streamlit reviewer app (src/app/streamlit_app.py)
+        +---> GenAI insights layer (src/genai/insight_generator.py)
 ```
 
-### Mart boundary rules for Sprint 6
+### Mart boundary rules for the user analytics pipeline
 
 | Boundary | Rule |
 |----------|------|
 | dim_user.csv | RESTRICTED — must never be joined into analytics outputs |
 | mart_report_user_daily | Contains user_key (pseudonymous). Must not display user_key values in UI or notebooks |
 | mart_report_engagement | Privacy-safe. Report-level only. Safe for dashboard and downstream consumers |
-| GenAI / Streamlit | Future consumers only. Sprint 6 does not invoke either layer |
+| GenAI / Streamlit | Downstream consumers. Not invoked by the user analytics pipeline |
 
-### What Sprint 6 does NOT do
+### What the user analytics pipeline does NOT do
 
 - Does not join `dim_user.csv` to any output
 - Does not display individual user keys in notebooks or dashboards
