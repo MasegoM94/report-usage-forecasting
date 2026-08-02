@@ -40,7 +40,7 @@ Risk is only raised (True) when supporting, non-suppressed evidence is available
 
 Examples:
 - `usage_decline_risk` is null if `history_sufficient_28d` is False
-- `concentrated_dependency_risk` is null if privacy is suppressed (unique_users < MIN_USERS)
+- `concentrated_dependency_risk` is null if privacy is suppressed — the diagnostics pipeline reads the upstream `privacy_suppression_status` flag from the engagement context; it does not apply its own user-count threshold
 - `elevated_lapse_risk` is null if cohort window is insufficient (< 28 days)
 
 ---
@@ -84,19 +84,44 @@ Examples:
 
 ---
 
-## 4. Privacy Suppression Threshold
+## 4. Privacy Suppression
 
-**MIN_USERS = 5**
+The report analytics pipeline does not apply privacy suppression itself. It receives
+pre-suppressed values from the upstream user analytics pipeline and propagates them unchanged.
 
-When `unique_users_28d < 5` for a given report-window:
-- `top_1_user_view_share_28d`, `top_3_users_view_share_28d`, `user_view_hhi_28d`,
-  `effective_user_count_28d`, `effective_user_share_28d`, `concentration_direction` are set to null
-- `privacy_suppression_status` = "suppressed"
+**Where suppression is applied — upstream user analytics modules:**
+
+The following fields arrive null in the engagement context because they were suppressed upstream
+when `active_user_count_28d` fell below each module's threshold:
+
+| Field | Upstream module | Gate attribute | Threshold |
+|---|---|---|---|
+| `top_1_user_view_share_28d`, `top_3_users_view_share_28d`, `user_view_hhi_28d`, `effective_user_count_28d`, `effective_user_share_28d` | `src/analytics/user_concentration_metrics.py` | `ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS` | 5 |
+| `returning_user_share_28d` and other activity share fields | `src/analytics/user_engagement_metrics.py` | `UserEngagementMetricsConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS` | 5 |
+| Cohort share fields (`retained_user_rate_28d`, `lapse_rate_28d`, etc.) | `src/analytics/user_engagement_cohorts.py` | `CohortConfig.MIN_USERS_FOR_COHORT_BREAKDOWN` | 5 |
+| Frequency distribution fields | `src/analytics/user_frequency_metrics.py` | `FrequencyMetricsConfig.MIN_USERS_FOR_FREQUENCY_DISTRIBUTIONS` | 5 |
+
+`concentration_direction` is derived inside `report_engagement_mart.py` from the concentration
+outputs; when `concentration_status` is null or privacy_suppressed upstream,
+`concentration_direction` is also unavailable.
+
+**How the report analytics pipeline uses suppression state:**
+
+- `privacy_suppression_status` and `privacy_suppressed_field_count` are carried unchanged from
+  the upstream engagement context into `report_engagement_context.csv`
+- `report_diagnostics.py` reads `privacy_suppression_status` from the engagement context
+  (`src/analytics/report_diagnostics.py:474`) and returns no-risk for concentration flags
+  when that status is in `PRIVACY_SUPPRESSED_STATUSES` — it applies no user-count threshold itself
+- `concentrated_dependency_risk` and `increasing_dependency_risk` are never raised from
+  suppressed metrics; this is enforced by the diagnostics pipeline reading the upstream flag
+
+**Suppression sentinel rules:**
+
+- Suppressed numeric fields are null — never zero
+- `privacy_suppression_status` = "suppressed" or "partial_suppression" when any field was suppressed
 - `privacy_suppressed_field_count` records the count of suppressed fields
-
-Suppressed values are never treated as zero. Concentration-based risks
-(`concentrated_dependency_risk`, `increasing_dependency_risk`) are never raised from
-suppressed metrics.
+- `repeat_engagement_status` returns the sentinel value `privacy_suppressed` (not null) when
+  the upstream `activity_privacy_suppressed` flag is True (gated at unique_users_28d < 5)
 
 ---
 
