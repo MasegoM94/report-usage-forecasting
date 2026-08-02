@@ -2,8 +2,11 @@
 
 This document describes all eight output files produced by the report analytics pipeline.
 All outputs are **report-level**. No file contains user keys, email addresses, display names,
-or any other direct identifier. Aggregated user metrics use privacy suppression when the active
-user count is below the minimum threshold (MIN_USERS = 5).
+or any other direct identifier. Where user-derived fields appear (section 4), the values
+are carried from upstream user analytics outputs that have already applied privacy suppression.
+The report analytics pipeline preserves those suppression results; it does not re-apply or
+override them. Suppression thresholds and the specific fields they govern are documented
+in each section below.
 
 ---
 
@@ -68,9 +71,15 @@ user count is below the minimum threshold (MIN_USERS = 5).
 - `breadth_status`: broad, niche, single_user, insufficient_evidence
 - `repeat_engagement_status`: strong_repeat, moderate_repeat, low_repeat, one_time_only, insufficient_evidence
 - `dependency_status`: broadly_distributed, moderately_concentrated, highly_concentrated, insufficient_evidence
-- `privacy_suppression_status`: not_suppressed, suppressed (when unique_users_28d < 5)
+- `privacy_suppression_status`: not_suppressed, suppressed (OR of four upstream flags: activity, cohort, frequency, concentration)
 **Null vs zero:** Concentration metrics (top_1_user_view_share_28d, user_view_hhi_28d) are null when privacy is suppressed — not zero. Lapse rate is null when cohort history is insufficient — not "no lapse".
-**Privacy:** Aggregated only. privacy_suppressed_field_count records how many fields were suppressed. No user_key in this file.
+**Privacy:** All user-derived values are carried from upstream user analytics outputs. Suppression is applied upstream, not by this file's pipeline:
+- `top_1_user_view_share_28d`, `top_3_users_view_share_28d`, `user_view_hhi_28d`, `effective_user_count_28d`, `effective_user_share_28d` — null when active_user_count_28d < 5 (`ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS`, `src/analytics/user_concentration_metrics.py`)
+- `returning_user_share_28d` and related share inputs — null when unique_users_28d < 5 (`UserEngagementMetricsConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS`, `src/analytics/user_engagement_metrics.py`)
+- `repeat_engagement_status` — returns `privacy_suppressed` when the upstream `activity_privacy_suppressed` flag is True (set at unique_users_28d < 5); the field holds a sentinel value, not null
+- `dependency_status` — returns `unavailable` when `concentration_status` is null or privacy_suppressed; the upstream concentration gate is the same threshold-5 attribute above
+- `breadth_status` — not privacy-suppressed; classifies from any non-zero user count
+- `privacy_suppressed_field_count` records how many upstream fields were suppressed. No user_key in this file.
 
 ---
 
@@ -104,7 +113,7 @@ user count is below the minimum threshold (MIN_USERS = 5).
 - `primary_diagnostic`: no_valid_data, prolonged_inactivity, severe_historical_decline, expected_inactivity, severe_model_health_issue, elevated_lapse, active_user_decline, concentrated_dependency, high_forecast_uncertainty, declining_frequency, low_repeat_engagement, metadata_limitation, newly_launched_or_immature, none
 - `recommended_diagnostic_action`: (see ALLOWED_RECOMMENDED_ACTIONS in src/analytics/report_diagnostics.py)
 **Null vs zero:** Risk flags are null when evidence is insufficient to raise them. A null risk flag means "unknown" — not "no risk".
-**Privacy:** Concentration-based risks (concentrated_dependency_risk, increasing_dependency_risk) are never raised from suppressed metrics.
+**Privacy:** Concentration-based risks (concentrated_dependency_risk, increasing_dependency_risk) are never raised when `concentration_privacy_suppressed` is True — this flag is set upstream when active_user_count_28d < ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS (default: 5). The diagnostics pipeline reads the pre-suppressed engagement context; it does not apply its own suppression threshold.
 
 ---
 
@@ -124,7 +133,7 @@ user count is below the minimum threshold (MIN_USERS = 5).
 - `metadata_segment`: metadata_complete, metadata_partial, metadata_missing, insufficient_evidence
 - `primary_report_segment`: (see ALLOWED_PRIMARY_SEGMENTS in src/analytics/report_segmentation.py)
 **Null vs zero:** Segment values of "insufficient_evidence" mean evidence was unavailable — not that the report is unimportant.
-**Privacy:** No user-level fields. Concentration-based dependency_segment is never set from suppressed metrics.
+**Privacy:** No user-level fields. `dependency_segment` is derived from `dependency_status` in the upstream engagement context; when `concentration_privacy_suppressed` is True (active_user_count_28d < ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS, default: 5), `dependency_status` is `unavailable` and `dependency_segment` reflects that absence rather than a measured concentration level.
 
 ---
 
@@ -139,5 +148,5 @@ user count is below the minimum threshold (MIN_USERS = 5).
 - `overall_review_priority`: high, medium, low, insufficient_evidence
 - `recommended_report_action`: (see ALLOWED_RECOMMENDED_ACTIONS; PROHIBITED_MART_ACTIONS are never present)
 **Null vs zero:** Null fields from any source remain null in the mart. The mart never replaces null with zero or with a default value unless explicitly specified in the source module.
-**Privacy:** Inherits all privacy constraints from source files. No user-level fields. No email patterns. No direct identifiers.
+**Privacy:** Carries all suppression results from source files unchanged — null fields remain null, sentinel values (e.g. `privacy_suppressed`, `unavailable`) remain as set by upstream modules. No user-level fields. No email patterns. No direct identifiers.
 
