@@ -1,7 +1,7 @@
-# Model Diagnostics Methodology (Sprint 5)
+# Model Diagnostics Methodology
 
 This document describes the statistical methods, policies, and thresholds used
-by the Sprint 5 diagnostic modules in `src/models/`.
+by the model diagnostics pipeline in `src/models/`.
 
 ---
 
@@ -56,7 +56,7 @@ The Ljung-Box test tests the null hypothesis that all autocorrelations up to lag
   to `k`.
 - **Large p-value (>= 0.05):** Insufficient evidence to reject independence.
 
-**Sprint 5 policy:** A significant Ljung-Box p-value does not automatically classify
+**Diagnostics policy:** A significant Ljung-Box p-value does not automatically classify
 a model as poor. The practical severity depends on:
 
 1. The magnitude of individual ACF coefficients, not just the test p-value.
@@ -149,14 +149,14 @@ configurable but defaults to 3.0 for consistency with standard practice.
 
 ## 8. Distribution Test Policy
 
-Sprint 5 tests residual normality using:
+The diagnostics pipeline tests residual normality using:
 
 1. **Jarque-Bera test:** joint test of skewness and kurtosis. Applied to all sample
    sizes.
 2. **Shapiro-Wilk test:** direct normality test. Applied only when `n < 5000` due
    to computational constraints.
 
-**Sprint 5 policy:** Non-normality (significant JB or SW p-value) does NOT
+**This policy:** Non-normality (significant JB or SW p-value) does NOT
 automatically classify a model as poor. Non-normality primarily affects the
 reliability of prediction intervals, not point-forecast accuracy. MASE and WAPE
 are distribution-free metrics unaffected by residual non-normality.
@@ -256,7 +256,7 @@ When evidence is insufficient:
 
 ## 14. No Automatic Retraining Policy
 
-`automatic_retraining_triggered` is always `False` in Sprint 5.
+`automatic_retraining_triggered` is always `False`.
 
 The field is preserved in the output schema to support future pipeline extensions,
 but no automatic action is taken. The `consider_retraining` recommended action
@@ -276,7 +276,7 @@ This policy exists because:
 ## 15. Future Potential Guardrails
 
 The following guardrails are documented as future extensions but are **not
-implemented in Sprint 5**:
+currently implemented**:
 
 1. **Automatic retraining trigger:** if `model_diagnostic_status = poor` persists
    for N consecutive diagnostic runs, trigger a supervised retraining workflow.
