@@ -265,3 +265,21 @@ mart_report_engagement (report-level only; no user_key column)
 - Does not modify report diagnostics or report segmentation files
 - Does not make report retirement or deletion recommendations
 - Does not invoke the GenAI layer or Streamlit app
+
+---
+
+## Known Implementation Limitations
+
+These are structural constraints in the current codebase that are accurate and not documented elsewhere.
+
+### Dual `status_label()` functions
+
+`src/app/utils/portfolio_helpers.py` and `src/app/utils/definitions.py` both define a `status_label()` function with overlapping but inconsistent label strings. `streamlit_app.py` imports both under different aliases. Known discrepancy: `"growing_usage"` maps to `"Growing"` in `portfolio_helpers.py` and `"Growing usage"` in `definitions.py`. The canonical definition should live in `definitions.py` only; the copy in `portfolio_helpers.py` should be removed.
+
+### Dual-context import pattern in Streamlit utilities
+
+`src/app/utils/filter_helpers.py` and `src/app/utils/load_data.py` use a `try/except ModuleNotFoundError` pattern to handle two resolution contexts: Streamlit runtime (`utils.*`) and test context (`src.app.utils.*`). This is functional but fragile. Installing the project as a package (`pip install -e .` with a `pyproject.toml`) would eliminate the need for this pattern entirely.
+
+### `src/app/` is not a proper Python package
+
+`src/app/` and `src/app/utils/` have no `__init__.py` and are therefore not importable as Python packages. Import resolution relies on `sys.path.insert(0, ...)` in `streamlit_app.py` and `conftest.py`. The fix is to add `__init__.py` to both directories and adopt a package-install approach.

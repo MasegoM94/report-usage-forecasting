@@ -67,6 +67,7 @@ build_interview_doc.js
 docs/interview_prep_*.md
 docs/interview_prep_*.docx
 docs/sprint_*_completion.md
+docs/portfolio_audit_report.md
 
 # Local caches and build artefacts
 .ruff_cache/
