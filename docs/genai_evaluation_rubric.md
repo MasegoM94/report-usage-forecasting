@@ -1,6 +1,6 @@
 # GenAI Insight Layer — Human Review Rubric
 
-**Sprint 8 Step 9 | Report-Usage Forecasting Project**
+**Report-Usage Forecasting Project**
 
 This rubric is used for periodic human evaluation of generated insights. Automated checks in `src/genai/evaluation.py` validate structural and safety properties; this rubric evaluates stakeholder usefulness, which cannot be fully captured by deterministic rules.
 
