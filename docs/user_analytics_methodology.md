@@ -2,8 +2,13 @@
 
 This document describes the metric computation methodology for all user analytics outputs.
 The canonical definitions are implemented in `src/analytics/engagement_definitions.py`.
-Configuration thresholds are in `src/analytics/report_engagement_status.py` (EngagementStatusConfig)
-and `src/analytics/privacy_policy.py` (PrivacyConfig).
+Classification thresholds are in `src/analytics/report_engagement_status.py` (EngagementStatusConfig).
+Privacy suppression thresholds are defined in each metric module's own configuration class —
+`ConcentrationMetricsConfig` (`user_concentration_metrics.py`), `UserEngagementMetricsConfig`
+(`user_engagement_metrics.py`), `CohortConfig` (`user_engagement_cohorts.py`), and
+`FrequencyMetricsConfig` (`user_frequency_metrics.py`). `src/analytics/privacy_policy.py`
+(PrivacyConfig) defines the identity-restriction policy and the cross-cutting
+`apply_small_group_suppression` utility but does not centrally govern every module's threshold.
 
 ---
 
@@ -187,7 +192,7 @@ HHI = SUM((user_views_i / total_views_28d) ^ 2)  for all active users i
 - HHI ≈ 0: views are distributed equally across many users (minimum concentration)
 - HHI > 0.35: classified as `concentrated_dependency` (configurable threshold in EngagementStatusConfig)
 
-HHI is suppressed (null) when active user count < PrivacyConfig.MIN_GROUP_SIZE.
+HHI is suppressed (null) when active_user_count_28d < ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS (default: 5), defined in `src/analytics/user_concentration_metrics.py`. `concentration_status_28d` is suppressed by the same gate.
 
 ---
 
@@ -256,22 +261,64 @@ These decisions require organisational context that analytics outputs alone cann
 
 ## 17. Privacy Suppression Policy
 
-Suppression is applied at the **metric level** (individual fields set to null), not at the row level.
-All reports always appear in `mart_report_engagement`, even if suppressed.
+Suppression is applied at the **metric level**, not at the row level. All reports always appear in
+`mart_report_engagement`, even if suppressed. Each metric family is gated by a threshold defined
+in its own producing module — there is no single central threshold that governs all user analytics.
 
-**When suppression is applied**:
-- `active_user_count_28d < PrivacyConfig.MIN_GROUP_SIZE` (default 5):
-  - `top_1_user_view_share_28d`, `top_3_users_view_share_28d`, `top_10pct_users_view_share_28d`
-  - `user_view_hhi_28d`, `effective_user_count_28d`, `effective_user_share_28d`
-  - Cohort-level shares that could identify individuals in a small group
+### Metric suppression — threshold 5 (field set to null)
 
-**What suppression does not affect**:
+The following families are suppressed (fields set to null) when the relevant active user count
+falls below the module-specific threshold. All of these thresholds default to 5.
+
+**Concentration distributions** — gated by `ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS = 5` (`user_concentration_metrics.py`):
+`top_1_user_view_share_28d`, `top_3_users_view_share_28d`, `top_10pct_users_view_share_28d`,
+`user_view_hhi_28d`, `effective_user_count_28d`, `effective_user_share_28d`,
+`concentration_status_28d`
+
+**Activity share fields** — gated by `UserEngagementMetricsConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS = 5` (`user_engagement_metrics.py`):
+`returning_user_share_28d`, `one_time_user_share_28d`, `repeat_view_user_share_28d`
+
+**Cohort shares** — gated by `CohortConfig.MIN_USERS_FOR_COHORT_BREAKDOWN = 5` (`user_engagement_cohorts.py`):
+`retained_user_rate_28d`, `lapse_rate_28d`, `newly_adopted_user_share_28d`, `reactivated_user_share_28d`
+
+**Frequency distributions** — gated by `FrequencyMetricsConfig.MIN_USERS_FOR_FREQUENCY_DISTRIBUTIONS = 5` (`user_frequency_metrics.py`):
+`views_per_active_user_28d`, `views_per_user_day_28d`, `median_views_per_user_28d`,
+`p90_views_per_user_28d`, `median_user_active_days_28d`, `mean_return_gap_days_28d`,
+`median_return_gap_days_28d`
+
+### Status classification — threshold 3 (field receives a sentinel value, not null)
+
+`repeat_usage_status` is classified by `UserEngagementMetricsConfig.MIN_USERS_FOR_REPEAT_STATUS = 3`
+(`user_engagement_metrics.py`). When `unique_users_28d < 3`, the field is set to `privacy_suppressed`
+— a status value that the field explicitly holds, not an absent or null field.
+
+`ConcentrationMetricsConfig` declares `MIN_USERS_FOR_CONCENTRATION_STATUS = 3` as a configuration
+attribute, but this threshold is not currently enforced in the suppression logic. In the current
+implementation, `concentration_status_28d` is suppressed (null) at threshold 5 by the same gate
+as the concentration distribution fields.
+
+### Suppression and status availability
+
+The different thresholds create a distinct gap at 3–4 active users. A report with 3 or 4 users:
+- receives `repeat_usage_status = privacy_suppressed` (a classification — the field has a value)
+- has all share, distribution, cohort, frequency, and concentration fields set to null
+
+A report with 5 or more users has both the status classifications and the numeric distributions
+available. A status value of `privacy_suppressed` is therefore not equivalent to a null field —
+one means the status was assessed and the answer is privacy-limited; the other means the metric
+was not computed.
+
+### What suppression does not affect
+
 - `unique_users_28d` (a count, not a share — cannot identify individuals)
-- `overall_engagement_status` (set to `privacy_limited` when suppression prevents classification)
-- All rows remain in the mart with a non-null status
+- `active_user_count_28d`, `total_views_28d`, `recent_users_28d`, `previous_users_28d` — population counts, never suppressed
+- `overall_engagement_status` (set to `privacy_limited` when any suppression flag is raised and no higher-priority status condition applies)
+- All rows remain in the mart with a non-null `overall_engagement_status`
 
-**Prohibited output fields** (defined in `privacy_policy.py`):
-Never appear in any analytics output file:
+### Prohibited output fields
+
+Defined in `src/analytics/privacy_policy.py` (`PROHIBITED_OUTPUT_COLUMNS`). Never appear in any
+analytics output file or DataFrame:
 - user_id, email, email_address, user_name, username, display_name, unique_user, principal_name, directory_id
 
 ---
