@@ -1,6 +1,6 @@
-# User Analytics Methodology — Sprint 6
+# User Analytics Methodology
 
-This document describes the metric computation methodology for all Sprint 6 user engagement outputs.
+This document describes the metric computation methodology for all user analytics outputs.
 The canonical definitions are implemented in `src/analytics/engagement_definitions.py`.
 Configuration thresholds are in `src/analytics/report_engagement_status.py` (EngagementStatusConfig)
 and `src/analytics/privacy_policy.py` (PrivacyConfig).
