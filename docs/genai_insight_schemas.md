@@ -1,6 +1,6 @@
 # GenAI Insight Layer — Schema Reference
 
-**Sprint 8 | Report-Usage Forecasting Project**
+**Report-Usage Forecasting Project**
 
 This document describes every field in the GenAI insight layer: report-level context input, report-level insight output, portfolio context, portfolio insight output, and evaluation result. Fields that do not exist in the implementation are not documented here.
 
