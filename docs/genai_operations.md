@@ -1,6 +1,6 @@
 # GenAI Insight Layer — Operations and Failure Guide
 
-**Sprint 8 | Report-Usage Forecasting Project**
+**Report-Usage Forecasting Project**
 
 This guide covers running the GenAI pipeline, understanding generation statuses, handling failures, and operating cost controls. All commands are run from the repository root.
 
