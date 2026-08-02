@@ -1,6 +1,6 @@
-# Data Dictionary — Sprint 7 Report Analytics Outputs
+# Data Dictionary — Report Analytics Outputs
 
-This document describes all eight output files produced by the Sprint 7 report analytics pipeline.
+This document describes all eight output files produced by the report analytics pipeline.
 All outputs are **report-level**. No file contains user keys, email addresses, display names,
 or any other direct identifier. Aggregated user metrics use privacy suppression when the active
 user count is below the minimum threshold (MIN_USERS = 5).
@@ -132,7 +132,7 @@ user count is below the minimum threshold (MIN_USERS = 5).
 
 **Grain:** one row per (analytics_run_id, report_id)
 **Key:** report_id
-**Source:** All seven Sprint 7 sources above, joined on report_id
+**Source:** All seven sources above, joined on report_id
 **Evidence fields:** overall_evidence_status (composite of all source evidence statuses)
 **Status values:**
 - `overall_report_status`: (see ALLOWED_OVERALL_STATUS in src/analytics/report_analytics_mart.py)
@@ -141,17 +141,3 @@ user count is below the minimum threshold (MIN_USERS = 5).
 **Null vs zero:** Null fields from any source remain null in the mart. The mart never replaces null with zero or with a default value unless explicitly specified in the source module.
 **Privacy:** Inherits all privacy constraints from source files. No user-level fields. No email patterns. No direct identifiers.
 
----
-
-## Deprecated fields (not present in any Sprint 7 output)
-
-See `docs/deprecated_fields_sprint7.md` for the full replacement mapping.
-
-| Deprecated field | Replaced by |
-|---|---|
-| `latest_views` | `recent_28d_views` |
-| `prior_views` | `previous_28d_views` |
-| `usage_change_pct` | `usage_change_28d_pct` |
-| `repeat_rate` | `returning_user_share_28d` |
-| `top_user_concentration` | `top_1_user_view_share_28d` + `user_view_hhi_28d` |
-| `niche` segment | `niche_healthy_engagement` (engagement_segment) + `concentrated_dependency` (dependency_segment) |
