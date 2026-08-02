@@ -1,6 +1,6 @@
-# Report Analytics Methodology — Sprint 7
+# Report Analytics Methodology
 
-This document describes the methodological decisions governing the Sprint 7 report analytics
+This document describes the methodological decisions governing the report analytics
 pipeline: temporal alignment, evidence gating, deterministic precedence, privacy suppression,
 the complete daily spine policy, and what is explicitly not inferred from usage.
 
@@ -8,7 +8,7 @@ the complete daily spine policy, and what is explicitly not inferred from usage.
 
 ## 1. Source-Derived `analytics_as_of_date` Policy
 
-All Sprint 7 outputs set `analytics_as_of_date` from `max(usage_date)` in the source mart
+All outputs set `analytics_as_of_date` from `max(usage_date)` in the source mart
 (mart_report_daily_series). This date is never derived from `date.today()` or wall-clock time.
 
 **Why:** Using `date.today()` would make outputs non-reproducible and would silently shift
@@ -132,7 +132,7 @@ When missing from dim_report, these default to "unknown" — never to an inferre
 
 ## 7. Prohibited Actions
 
-Never produced by Sprint 7: retire_report, delete_report, automatically_retrain,
+Never produced by this pipeline: retire_report, delete_report, automatically_retrain,
 change_selected_model, restrict_user, contact_specific_user.
 
 See PROHIBITED_ACTIONS in src/analytics/report_diagnostics.py and
