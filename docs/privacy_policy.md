@@ -95,7 +95,7 @@ One-time users and returning users are mutually exclusive and exhaustive for act
 
 ## 6. Deprecated Legacy Fields
 
-The following fields are deprecated. Do not use them in Sprint 6+ code.
+The following fields are deprecated. Do not use them in new or modified code.
 
 | Deprecated field | Module | Old definition | Canonical replacement |
 |---|---|---|---|
@@ -103,7 +103,7 @@ The following fields are deprecated. Do not use them in Sprint 6+ code.
 | `is_repeat_user` | `src/features/engagement_features.py` | `date > first_view_date` (lifetime semantics) | `lifetime_returned_flag` |
 | `repeat_usage_flag` | `src/analytics/user_features.py` | `(active_days > 1) OR (total_views > 1)` — ambiguous | `lifetime_returned_flag` |
 
-Deprecated fields are retained in outputs for backwards compatibility during Sprint 6. They will be removed in Sprint 7.
+Deprecated fields are retained for backwards compatibility. No scheduled removal date has been set; they may be removed in a future pipeline version without notice.
 
 ---
 
