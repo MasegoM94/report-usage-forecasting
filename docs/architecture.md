@@ -230,15 +230,16 @@ Complete engagement window boundaries
         +---> Concentration metrics    (HHI, top-user shares, effective user count)
               (report_user_concentration_metrics)
                     |
-                    v  [privacy suppression applied if users < MIN_GROUP_SIZE]
+                    v  [privacy suppression applied if users < PrivacyConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS]
                     |
         +-----------+
         |
         v
 Deterministic engagement status classification
-  [priority-ordered: no_valid_data > privacy_limited > insufficient_evidence
-   > inactive > newly_active > declining > elevated_lapse > concentrated_dependency
-   > low_repeat > growing > healthy_broad > healthy_niche > stable]
+  [priority-ordered: no_valid_user_data > insufficient_evidence > inactive
+   > newly_active > declining_adoption > elevated_lapse > low_repeat_usage
+   > concentrated_dependency > growing_adoption > healthy_broad_adoption
+   > healthy_niche_adoption > stable_engagement > privacy_limited > mixed_signals]
         |
         v
 mart_report_engagement (report-level only; no user_key column)

@@ -826,10 +826,15 @@ _USAGE_STATUS_HELP = {
 
 _FORECAST_STATUS_HELP = {
     "growth_expected":       "The model expects usage to increase over the forecast horizon.",
+    "reactivation_expected": "The model expects some recovery after a period of low or zero usage.",
     "stable_outlook":        "The model expects usage to remain broadly stable.",
-    "reactivation_expected": "The model expects some recovery after a period of low usage.",
-    "uncertain_outlook":     "The prediction interval is wide — the direction is unclear.",
+    "mixed_outlook":         "No single directional signal dominated — the outlook is ambiguous.",
+    "low_usage_expected":    "The forecast horizon is predominantly in the low-usage band (≥ 50 % of days).",
+    "uncertain_outlook":     "The prediction interval is very wide — the direction cannot be determined reliably.",
+    "inactivity_expected":   "The model expects usage to reach zero over the forecast horizon.",
     "decline_expected":      "The model expects usage to decrease over the forecast horizon.",
+    "insufficient_evidence": "No forecast is available for this report — either no forecast rows exist or the alignment is incompatible.",
+    "invalid_forecast":      "The forecast source status is invalid; the forecast cannot be used.",
 }
 
 _MODEL_STATUS_HELP = {

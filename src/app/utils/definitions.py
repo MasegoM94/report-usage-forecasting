@@ -142,10 +142,15 @@ STATUS_LABELS: dict[str, str] = {
     "prolonged_inactivity":       "Inactive",
     # forecast_outlook_status
     "growth_expected":            "Growth expected",
-    "stable_outlook":             "Stable outlook",
     "reactivation_expected":      "Reactivation expected",
+    "stable_outlook":             "Stable outlook",
+    "mixed_outlook":              "Mixed signals",
+    "low_usage_expected":         "Low usage expected",
     "uncertain_outlook":          "Uncertain",
+    "inactivity_expected":        "Inactivity expected",
     "decline_expected":           "Decline expected",
+    "insufficient_evidence":      "Insufficient evidence",
+    "invalid_forecast":           "Invalid forecast",
     # overall_engagement_status
     "healthy_broad_adoption":     "Healthy – broad",
     "healthy_niche_adoption":     "Healthy – niche",

@@ -37,8 +37,8 @@ Only the 34-field `INSIGHT_CONTEXT_ALLOWLIST` is passed to the LLM — all other
 |-------|------|---------|----------------|
 | `forecast_total_28d` | float | Forecasted total views for the next 28-day window | May be null for inactive reports |
 | `forecast_change_vs_actual_28d_pct` | float | Forecasted change vs most recent actuals (fractional) | May be null |
-| `forecast_outlook_status` | string | Classified forecast direction (`growth_expected`, `decline_expected`, `stable_outlook`, `uncertain_outlook`, `reactivation_expected`) | Never null |
-| `forecast_uncertainty_status` | string | Forecast precision classification (`low_uncertainty`, `moderate_uncertainty`, `high_uncertainty`, `very_high_uncertainty`, `intervals_unavailable`) | Never null |
+| `forecast_outlook_status` | string | Classified forecast direction (`growth_expected`, `stable_outlook`, `decline_expected`, `reactivation_expected`, `uncertain_outlook`, `mixed_outlook`, `inactivity_expected`, `low_usage_expected`, `insufficient_evidence`, `invalid_forecast`) | Never null |
+| `forecast_uncertainty_status` | string | Forecast precision classification (`low_uncertainty` ≤ 0.25, `moderate_uncertainty` 0.25–0.75, `high_uncertainty` 0.75–1.50, `very_high_uncertainty` ≥ 1.50, `intervals_unavailable` — no bounds produced, `insufficient_horizon` — fewer than 28 horizon rows, `invalid_intervals` — negative relative uncertainty) | Never null |
 | `forecast_interpretation_status` | string | Interpretability flag (`sufficient_evidence`, `insufficient_model_evidence`) | Never null |
 
 ### 1.4 Model health

@@ -340,6 +340,18 @@ class TestNoPrecedenceConflation:
 
 
 class TestDeterministicReasons:
+    def test_forecast_outlook_status_never_calculation_failed(self):
+        # calculation_failed is a sentinel used by other fields (model_diagnostic_status,
+        # bias_status, etc.) but is never produced by classify_forecast_outlook_status()
+        # or the missing-forecast branch. FORECAST_INSUFFICIENT_STATUSES must not
+        # imply it is a valid forecast_outlook_status value.
+        from src.analytics.report_forecast_outlook import _ALLOWED_OUTLOOK_STATUSES
+        assert "calculation_failed" not in _ALLOWED_OUTLOOK_STATUSES
+        df = _build(outlook_kw={"forecast_outlook_status": "insufficient_evidence"})
+        assert df["forecast_segment"].iloc[0] == "insufficient_evidence"
+        df2 = _build(outlook_kw={"forecast_outlook_status": "invalid_forecast"})
+        assert df2["forecast_segment"].iloc[0] == "insufficient_evidence"
+
     def test_reasons_are_deterministic(self):
         df1 = _build()
         df2 = _build()

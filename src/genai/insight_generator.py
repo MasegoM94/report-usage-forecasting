@@ -164,12 +164,10 @@ _HISTORICAL_GROWING_STATUSES = frozenset({
 })
 
 _FORECAST_DECLINING_STATUSES = frozenset({
-    "decline_expected", "forecast_declining", "expected_inactivity",
-    "declining_forecast", "expected_decline",
+    "decline_expected", "expected_inactivity",
 })
 _FORECAST_GROWING_STATUSES = frozenset({
-    "growth_expected", "forecast_growing", "expected_growth",
-    "stable_growth_expected",
+    "growth_expected",
 })
 
 _ACTIVE_USER_DECLINING_VALUES = frozenset({"decreasing", "declining", "falling"})

@@ -125,7 +125,7 @@ class SegmentationConfig:
     FORECAST_INACTIVE_STATUSES: frozenset = frozenset({"inactivity_expected"})
     FORECAST_UNCERTAIN_STATUSES: frozenset = frozenset({"uncertain_outlook"})
     FORECAST_INSUFFICIENT_STATUSES: frozenset = frozenset({
-        "insufficient_evidence", "invalid_forecast", "calculation_failed",
+        "insufficient_evidence", "invalid_forecast",
     })
 
     # Model health statuses

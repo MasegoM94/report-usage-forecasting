@@ -174,7 +174,7 @@ One row per analytics run.
 
 **Unique key**: (analytics_run_id, report_id)
 
-**Privacy classification**: Report-level. Concentration metrics suppressed for small groups.
+**Privacy classification**: Report-level. Share and per-user distribution fields (returning_user_share_28d, one_time_user_share_28d, repeat_view_user_share_28d) are set to null when unique_users < UserEngagementMetricsConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS (default: 5). repeat_usage_status returns `privacy_suppressed` when unique_users < UserEngagementMetricsConfig.MIN_USERS_FOR_REPEAT_STATUS (default: 3).
 
 Selected columns (full list in `UserEngagementMetricsConfig`):
 
@@ -209,7 +209,7 @@ Zero means the report had zero users in that window (e.g. inactive reports get u
 
 **Grain**: one row per (analytics_run_id, report_id).
 
-**Privacy classification**: Report-level. Cohort counts suppressed for small groups.
+**Privacy classification**: Report-level. Cohort counts (retained, reactivated, lapsed, newly_adopted) and their share fields are set to null when recent_users_28d or previous_users_28d < CohortConfig.MIN_USERS_FOR_COHORT_BREAKDOWN (default: 5). recent_users_28d and previous_users_28d are never suppressed.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -236,7 +236,7 @@ Zero means the report had zero users in that window (e.g. inactive reports get u
 
 **Grain**: one row per (analytics_run_id, report_id).
 
-**Privacy classification**: Report-level. Metrics suppressed for small groups.
+**Privacy classification**: Report-level. Per-user distribution fields (views_per_active_user_28d, views_per_user_day_28d, median_views_per_user_28d, p90_views_per_user_28d, median_user_active_days_28d, mean_return_gap_days_28d, median_return_gap_days_28d) are set to null when unique_users_28d < FrequencyMetricsConfig.MIN_USERS_FOR_FREQUENCY_DISTRIBUTIONS (default: 5). total_views_28d is never suppressed.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -262,7 +262,7 @@ Zero means the report had zero users in that window (e.g. inactive reports get u
 
 **Grain**: one row per (analytics_run_id, report_id).
 
-**Privacy classification**: HHI and top-user shares are suppressed when active users < MIN_GROUP_SIZE.
+**Privacy classification**: HHI, top-user shares, and concentration_status_28d are suppressed when active_user_count_28d < ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS (default: 5). active_user_count_28d and total_views_28d are never suppressed.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -275,14 +275,16 @@ Zero means the report had zero users in that window (e.g. inactive reports get u
 | user_view_hhi_28d | float or null | Herfindahl-Hirschman Index (0 = equal; 1 = one user dominates) |
 | effective_user_count_28d | float or null | 1 / HHI (equivalent number of equally active users) |
 | effective_user_share_28d | float or null | effective_user_count_28d / active_user_count_28d |
-| concentration_status | string | highly_concentrated, moderately_concentrated, broadly_distributed |
+| concentration_status_28d | string | highly_concentrated, moderately_concentrated, broadly_distributed. Null when active_user_count_28d < 5. |
 | concentration_evidence_status | string | full_evidence, partial_history, etc. |
 | concentration_privacy_suppressed | boolean | True if concentration metrics were suppressed |
 | suppressed_concentration_fields | string | Pipe-delimited list of suppressed field names |
 
 **Suppression policy**: top_1_user_view_share_28d, top_3_users_view_share_28d,
-top_10pct_users_view_share_28d, user_view_hhi_28d, effective_user_count_28d, and
-effective_user_share_28d are set to null when active_user_count < PrivacyConfig.MIN_GROUP_SIZE.
+top_10pct_users_view_share_28d, user_view_hhi_28d, effective_user_count_28d,
+effective_user_share_28d, and concentration_status_28d are set to null when
+active_user_count_28d < ConcentrationMetricsConfig.MIN_USERS_FOR_CONCENTRATION_METRICS (default: 5).
+active_user_count_28d and total_views_28d are never suppressed.
 
 ---
 

@@ -617,6 +617,28 @@ class TestProhibitedPhraseWordBoundary:
 class TestDirectionGrounding:
     """Verify _check_direction_conflicts and its integration into validation."""
 
+    # ── Contract tests: canonical value sets ─────────────────────────────
+
+    def test_forecast_declining_statuses_contains_only_canonical_values(self):
+        # These are the only forecast_outlook_status values the producer
+        # assigns that signal a declining forecast direction.
+        # Values such as forecast_declining, declining_forecast, and
+        # expected_decline (a forecast_direction_28d value, not an outlook
+        # value) must not be present — they are unreachable via the mart.
+        from src.genai.insight_generator import _FORECAST_DECLINING_STATUSES
+        assert _FORECAST_DECLINING_STATUSES == {
+            "decline_expected",
+            "expected_inactivity",
+        }
+
+    def test_forecast_growing_statuses_contains_only_canonical_values(self):
+        # The only forecast_outlook_status value that signals a growing
+        # forecast direction is growth_expected.
+        # forecast_growing, expected_growth (a forecast_direction_28d value),
+        # and stable_growth_expected are never produced as outlook statuses.
+        from src.genai.insight_generator import _FORECAST_GROWING_STATUSES
+        assert _FORECAST_GROWING_STATUSES == {"growth_expected"}
+
     def _declining_ctx(self):
         return build_mart_context(_mart_row(
             historical_usage_status="declining_usage",

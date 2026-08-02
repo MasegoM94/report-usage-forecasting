@@ -327,6 +327,84 @@ class TestEmptyStateScenarios:
         assert result  # non-empty
 
 
+class TestForecastOutlookStatusMetadata:
+    """All ten canonical forecast_outlook_status values must have explicit
+    labels, tooltips, and STATUS_ORDER positions."""
+
+    CANONICAL = [
+        "growth_expected", "reactivation_expected", "stable_outlook",
+        "mixed_outlook", "low_usage_expected", "uncertain_outlook",
+        "inactivity_expected", "decline_expected",
+        "insufficient_evidence", "invalid_forecast",
+    ]
+
+    def test_all_ten_have_label_in_definitions(self):
+        from src.app.utils.definitions import STATUS_LABELS
+        missing = [v for v in self.CANONICAL if v not in STATUS_LABELS]
+        assert not missing, f"Missing labels in definitions.STATUS_LABELS: {missing}"
+
+    def test_all_ten_have_label_in_portfolio_helpers(self):
+        from src.app.utils.portfolio_helpers import STATUS_LABELS
+        missing = [v for v in self.CANONICAL if v not in STATUS_LABELS]
+        assert not missing, f"Missing labels in portfolio_helpers.STATUS_LABELS: {missing}"
+
+    def test_all_ten_have_tooltip_in_streamlit(self):
+        import importlib, sys
+        # Import the tooltip dict without running the Streamlit app
+        spec = importlib.util.spec_from_file_location(
+            "_st_app",
+            "/Users/masegomodibane/Documents/GitHub/Data Science Projects /Forecasting Report Usage/GitHub Final Version/report-usage-forecasting/src/app/streamlit_app.py",
+        )
+        # Parse the constant without executing the full module
+        import ast, pathlib
+        src = pathlib.Path(
+            "/Users/masegomodibane/Documents/GitHub/Data Science Projects /Forecasting Report Usage/GitHub Final Version/report-usage-forecasting/src/app/streamlit_app.py"
+        ).read_text()
+        tree = ast.parse(src)
+        help_keys = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == "_FORECAST_STATUS_HELP":
+                        help_keys = {k.s for k in node.value.keys if isinstance(k, ast.Constant)}
+        assert help_keys is not None, "_FORECAST_STATUS_HELP not found in streamlit_app.py"
+        missing = [v for v in self.CANONICAL if v not in help_keys]
+        assert not missing, f"Missing tooltips in _FORECAST_STATUS_HELP: {missing}"
+
+    def test_all_ten_in_status_order(self):
+        from src.app.utils.portfolio_helpers import STATUS_ORDER
+        order = STATUS_ORDER.get("forecast_outlook_status", [])
+        missing = [v for v in self.CANONICAL if v not in order]
+        assert not missing, f"Missing from STATUS_ORDER['forecast_outlook_status']: {missing}"
+
+    def test_status_order_contains_exactly_ten(self):
+        from src.app.utils.portfolio_helpers import STATUS_ORDER
+        order = STATUS_ORDER.get("forecast_outlook_status", [])
+        assert set(order) == set(self.CANONICAL), (
+            f"STATUS_ORDER mismatch. Extra: {set(order) - set(self.CANONICAL)}. "
+            f"Missing: {set(self.CANONICAL) - set(order)}"
+        )
+
+    def test_labels_are_non_empty_strings(self):
+        from src.app.utils.definitions import STATUS_LABELS
+        for v in self.CANONICAL:
+            label = STATUS_LABELS.get(v, "")
+            assert label and isinstance(label, str), f"Empty or missing label for {v!r}"
+
+    def test_unknown_value_still_gets_fallback_label(self):
+        from src.app.utils.portfolio_helpers import status_label
+        result = status_label("some_future_unknown_code_xyz")
+        assert result == "Some Future Unknown Code Xyz"
+
+    def test_positive_signals_sort_before_negative(self):
+        from src.app.utils.portfolio_helpers import STATUS_ORDER
+        order = STATUS_ORDER["forecast_outlook_status"]
+        growth_pos = order.index("growth_expected")
+        decline_pos = order.index("decline_expected")
+        invalid_pos = order.index("invalid_forecast")
+        assert growth_pos < decline_pos < invalid_pos
+
+
 # ---------------------------------------------------------------------------
 # Chart smoke tests
 # ---------------------------------------------------------------------------

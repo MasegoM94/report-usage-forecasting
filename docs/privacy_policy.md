@@ -62,18 +62,46 @@ The single approved user-level identifier for analytics outputs is `user_key`.
 
 ## 4. Small-Group Suppression Policy
 
-Distribution metrics are suppressed when `unique_users < 5` to prevent re-identification from small groups.
+Distribution metrics are suppressed when a report's active user count falls below the applicable minimum to prevent re-identification from small groups.
 
-**Rules:**
-- Suppressed values are set to `None` (null). Never `0` — zero would be misleading.
-- The count column (`unique_users`) itself is never suppressed.
+### 4a. PrivacyConfig (src/analytics/privacy_policy.py)
+
+`PrivacyConfig` is the central policy dataclass. All four fields are immutable (`frozen=True`):
+
+| Attribute | Default | Purpose |
+|---|---|---|
+| `MIN_USERS_FOR_DISTRIBUTION_METRICS` | 5 | Minimum unique users required before per-user ratio and share fields are populated. Used by `apply_small_group_suppression()` and the engagement metrics module. |
+| `MIN_USERS_FOR_COHORT_BREAKDOWN` | 5 | Minimum users required before cohort counts (retained, reactivated, lapsed) are populated. Declared on `PrivacyConfig`; the cohorts module carries a parallel local copy (`CohortConfig.MIN_USERS_FOR_COHORT_BREAKDOWN = 5`) that is not imported from `PrivacyConfig` but shares the same default. |
+| `SUPPRESS_SMALL_GROUPS` | `True` | Policy flag. When `True`, suppression is active. The analytics pipeline treats this as always-on; changing it to `False` would disable suppression globally for callers of `apply_small_group_suppression()`. |
+| `SUPPRESSED_SENTINEL` | `None` | The replacement value for suppressed fields. Always `None` (null) — never `0`. Zero would imply the metric was measured and found to be zero, which is a different state. |
+
+### 4b. Module-local thresholds
+
+Three modules define their own threshold constants that are structurally independent of `PrivacyConfig`. They are not read from `PrivacyConfig` at runtime:
+
+| Module | Attribute | Default | Governs |
+|---|---|---|---|
+| `user_concentration_metrics.py` | `MIN_USERS_FOR_CONCENTRATION_METRICS` | 5 | HHI and top-user share calculations |
+| `user_concentration_metrics.py` | `MIN_USERS_FOR_TOP_1_SHARE` | 5 | Top-1 user share field |
+| `user_concentration_metrics.py` | `MIN_USERS_FOR_TOP_3_SHARE` | 5 | Top-3 user share field |
+| `user_concentration_metrics.py` | `MIN_USERS_FOR_HHI` | 5 | HHI field |
+| `user_concentration_metrics.py` | `MIN_USERS_FOR_CONCENTRATION_STATUS` | **3** | Concentration status classification |
+| `user_engagement_metrics.py` | `MIN_USERS_FOR_DISTRIBUTION_METRICS` | 5 | Engagement distribution and share fields |
+| `user_engagement_metrics.py` | `MIN_USERS_FOR_SHARE_METRICS` | 5 | Returning-user share fields |
+| `user_engagement_metrics.py` | `MIN_USERS_FOR_REPEAT_STATUS` | **3** | Repeat-engagement status classification |
+| `user_frequency_metrics.py` | `MIN_USERS_FOR_FREQUENCY_DISTRIBUTIONS` | 5 | Views-per-user and return-gap distribution fields |
+
+The two attributes with a default of **3** (`MIN_USERS_FOR_CONCENTRATION_STATUS` and `MIN_USERS_FOR_REPEAT_STATUS`) govern status classification fields only — not the numerical distribution fields. A report with 3–4 active users can receive a concentration or repeat-engagement status but will still have its share and ratio columns suppressed (threshold 5 applies to those).
+
+### 4c. Suppression rules
+
+- Suppressed values are set to `None` (null). Never `0`.
+- The count column (`unique_users`) is never suppressed.
 - Total view counts (`total_views`) are never suppressed.
-- Suppressed outputs include metadata columns:
-  - `privacy_suppressed` (bool): True for suppressed rows.
+- Suppressed rows include three metadata columns added by `apply_small_group_suppression()`:
+  - `privacy_suppressed` (bool): `True` for suppressed rows.
   - `privacy_suppression_reason` (str): reason code, e.g. `unique_users_below_minimum`.
   - `suppressed_fields` (str): comma-separated list of suppressed column names.
-
-The suppression threshold is defined in `src/analytics/privacy_policy.py` as `PrivacyConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS = 5`.
 
 ---
 
@@ -97,13 +125,13 @@ One-time users and returning users are mutually exclusive and exhaustive for act
 
 The following fields are deprecated. Do not use them in new or modified code.
 
-| Deprecated field | Module | Old definition | Canonical replacement |
-|---|---|---|---|
-| `repeat_rate` | `src/analytics/report_features.py` | Users with view_count > 1 / unique_users (lifetime, repeat-view semantics) | `returning_user_share_28d` |
-| `is_repeat_user` | `src/features/engagement_features.py` | `date > first_view_date` (lifetime semantics) | `lifetime_returned_flag` |
-| `repeat_usage_flag` | `src/analytics/user_features.py` | `(active_days > 1) OR (total_views > 1)` — ambiguous | `lifetime_returned_flag` |
+| Deprecated field | Module | Old definition | Canonical replacement | Enforcement |
+|---|---|---|---|---|
+| `repeat_rate` | `src/analytics/report_features.py` | Users with view_count > 1 / unique_users (lifetime, repeat-view semantics) | `returning_user_share_28d` | **Blocked** — raises `ValueError` if present in a DataFrame passed to `report_features` validation |
+| `is_repeat_user` | `src/features/engagement_features.py` | `date > first_view_date` (lifetime semantics) | `lifetime_returned_flag` | Retained as alias; emits deprecation warning |
+| `repeat_usage_flag` | `src/analytics/user_features.py` | `(active_days > 1) OR (total_views > 1)` — ambiguous | `lifetime_returned_flag` | Retained as alias; emits deprecation warning |
 
-Deprecated fields are retained for backwards compatibility. No scheduled removal date has been set; they may be removed in a future pipeline version without notice.
+`repeat_rate` is not available in any current output — its presence causes a pipeline error. `is_repeat_user` and `repeat_usage_flag` are still produced as aliases of `lifetime_returned_flag` for backwards compatibility; no removal date has been set.
 
 ---
 

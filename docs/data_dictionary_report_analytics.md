@@ -30,9 +30,9 @@ user count is below the minimum threshold (MIN_USERS = 5).
 **Source:** forecast outputs (per-report SARIMA horizon files) + report_features.csv
 **Evidence fields:** forecast_evidence_status, missing_forecast_evidence, forecast_evidence_reasons, uncertainty_evidence_status
 **Status values:**
-- `forecast_outlook_status`: growth_expected, stable_outlook, decline_expected, low_usage_risk, forecast_inactivity_risk, high_uncertainty, insufficient_evidence
+- `forecast_outlook_status`: growth_expected (forecast direction growing, uncertainty not very high), stable_outlook (forecast direction stable), decline_expected (forecast direction declining, uncertainty not very high), reactivation_expected (forecast direction is expected reactivation), uncertain_outlook (forecast_uncertainty_status is very_high_uncertainty regardless of direction), mixed_outlook (no other branch matched), inactivity_expected (forecast direction is expected inactivity with sufficient horizon), low_usage_expected (≥ 50 % of the 28-day horizon falls in the low-usage band), insufficient_evidence (no forecast rows, incompatible alignment, or insufficient horizon), invalid_forecast (source status is invalid). Note: forecast_low_usage_risk and forecast_inactivity_risk are separate Boolean fields — they are not forecast_outlook_status values.
 - `forecast_direction_28d`: growing, stable, declining
-- `forecast_uncertainty_status`: low, moderate, high, very_high, insufficient_evidence
+- `forecast_uncertainty_status`: low_uncertainty (relative uncertainty ≤ 0.25), moderate_uncertainty (0.25–0.75), high_uncertainty (0.75–1.50), very_high_uncertainty (≥ 1.50), intervals_unavailable (no prediction interval bounds produced), insufficient_horizon (bounds exist but fewer than 28 horizon rows), invalid_intervals (calculated relative uncertainty is negative)
 - `forecast_trend_status`: rising, flat, falling, mixed, insufficient_evidence
 **Null vs zero:** Null forecast values = forecast not available for that report (missing horizon file or insufficient history). Interval bounds are summed — they are conservative and do not represent the true range of the sum.
 **Privacy:** No user-level fields.
@@ -117,7 +117,7 @@ user count is below the minimum threshold (MIN_USERS = 5).
 **Status values:**
 - `usage_segment`: growing_usage, stable_usage, declining_usage, inactive_usage, insufficient_evidence
 - `engagement_segment`: broad_healthy_engagement, niche_healthy_engagement, declining_engagement, low_engagement, insufficient_evidence
-- `forecast_segment`: growth_expected, stable_outlook, decline_expected, high_uncertainty, insufficient_evidence
+- `forecast_segment`: growth_expected, stable_outlook, decline_expected, low_usage_expected, inactivity_expected, uncertain_outlook, insufficient_evidence
 - `model_health_segment`: healthy_model, watch_model, poor_model, immature_production_evidence, insufficient_evidence
 - `dependency_segment`: broadly_distributed, moderately_concentrated, highly_concentrated, insufficient_evidence
 - `lifecycle_segment`: newly_launched, established, at_risk_of_deprecation, deprecated, insufficient_evidence
