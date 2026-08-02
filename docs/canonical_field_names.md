@@ -1,4 +1,4 @@
-# Canonical Field Names — Sprint 7
+# Canonical Field Names
 
 ## Report Features
 
