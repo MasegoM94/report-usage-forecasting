@@ -299,29 +299,31 @@ engagement status flags, issue classifications, and recommended actions.
 
 **Privacy classification**: No user_key. Report-level only. Safe to share with analytics consumers.
 
-**`overall_engagement_status` values** (priority-ordered):
+**`overall_engagement_status` values** (priority-ordered, first match wins; `classify_overall_engagement_status()`, `src/analytics/report_engagement_status.py`):
 
-| Status | Meaning |
-|--------|---------|
-| no_valid_user_data | No valid user events exist for this report |
-| privacy_limited | Too few users for classification (below suppression threshold) |
-| insufficient_evidence | History too short to evaluate the primary windows |
-| inactive | No users in last 28 days; prior history exists |
-| newly_active | Report first seen in the last 14 days |
-| declining_adoption | User count dropped >= 20% vs previous 28d |
-| elevated_lapse | Lapse rate >= 40% of previous period's users |
-| concentrated_dependency | HHI > 0.35 |
-| low_repeat_usage | Returning user share < 25% |
-| growing_adoption | User count grew >= 20% vs previous 28d |
-| healthy_broad_adoption | Many users (>= 10), good returning share |
-| healthy_niche_adoption | Few users (< 10) but consistent returning behaviour |
-| stable_engagement | All checks pass; no material changes detected |
+| Priority | Status | Meaning |
+|----------|--------|---------|
+| 1 | no_valid_user_data | No valid user events exist for this report |
+| 2 | insufficient_evidence | History too short to evaluate the primary windows. Reports with no previous-period users but active current users exit this step with `newly_active` instead. |
+| 3 | inactive | No users in last 28 days; prior history exists |
+| 4 | newly_active | No users in the previous 28d window; current users present; comparison history sufficient |
+| 5 | declining_adoption | User count dropped >= 20% vs previous 28d, or decline combined with elevated lapse |
+| 6 | elevated_lapse | Lapse rate >= 40% of previous period's users; no co-occurring decline |
+| 7 | low_repeat_usage | Returning user share < 25%; no co-occurring decline or lapse |
+| 8 | concentrated_dependency | HHI > 0.35; no co-occurring decline |
+| 9 | growing_adoption | Active user direction = growing; no poor-severity issues |
+| 10 | healthy_broad_adoption | Many users (>= 10), good returning share; no poor issues |
+| 11 | healthy_niche_adoption | Few users (< 10) but consistent returning behaviour; no poor issues |
+| 12 | stable_engagement | No poor-severity issues; no warnings; sufficient evidence |
+| 13 | privacy_limited | Privacy limitation issue raised; no higher-priority issue (decline, lapse, low-repeat, or concentration) matched |
+| 14 | growing_adoption | Active user direction = growing (fallback; reached when warnings prevented steps 9 and 12) |
+| 15 | mixed_signals | No other condition matched (fallback) |
 
 **`recommended_engagement_action` values**:
 
 | Action | Trigger |
 |--------|---------|
-| continue_monitoring | Healthy or stable engagement |
+| continue_monitoring | Healthy, stable, growing (fallback), privacy_limited, or mixed_signals engagement |
 | investigate_user_decline | Active user decline detected |
 | investigate_user_lapse | Elevated lapse rate |
 | review_concentrated_dependency | High HHI / top-user dependency |

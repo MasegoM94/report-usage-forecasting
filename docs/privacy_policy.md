@@ -91,7 +91,7 @@ Three modules define their own threshold constants that are structurally indepen
 | `user_engagement_metrics.py` | `MIN_USERS_FOR_REPEAT_STATUS` | **3** | Repeat-engagement status classification |
 | `user_frequency_metrics.py` | `MIN_USERS_FOR_FREQUENCY_DISTRIBUTIONS` | 5 | Views-per-user and return-gap distribution fields |
 
-`MIN_USERS_FOR_REPEAT_STATUS = 3` governs status classification only — a report with 3–4 active users receives `repeat_usage_status = privacy_suppressed` (a classified sentinel value, not null) while all share and ratio columns remain suppressed (threshold 5 applies to those).
+`MIN_USERS_FOR_REPEAT_STATUS = 3` governs status classification only. When `unique_users_28d < 3` (0–2 users), `repeat_usage_status` is set to the sentinel value `privacy_suppressed` — a classified field value, not null. At 3–4 users the threshold-3 gate is met and `repeat_usage_status` receives a real classification (`strong_repeat_engagement`, `moderate_repeat_engagement`, or `low_repeat_engagement`); all share and ratio columns remain null because the threshold-5 gate is not yet met.
 
 `MIN_USERS_FOR_CONCENTRATION_STATUS = 3` is declared on `ConcentrationMetricsConfig` but is not currently enforced in the suppression logic. In the current implementation, `concentration_status_28d` is suppressed (null) at threshold 5 by the same gate as the numeric concentration fields (`MIN_USERS_FOR_CONCENTRATION_METRICS`).
 

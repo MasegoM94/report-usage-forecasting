@@ -214,23 +214,26 @@ Null when HHI is null or zero (which would produce division by zero).
 ## 15. Engagement-Status Hierarchy
 
 The `overall_engagement_status` is determined by evaluating issue flags in priority order.
-The first matching condition determines the status:
+The first matching condition determines the status (`classify_overall_engagement_status()`,
+`src/analytics/report_engagement_status.py`):
 
 1. **no_valid_user_data** — `has_any_valid_user_activity = False` AND data quality is critical
-2. **privacy_limited** — active user count < suppression threshold in the 28d window
-3. **insufficient_evidence** — `history_sufficient_28d = False`
-4. **inactive** — `unique_users_28d = 0` but `has_any_valid_user_activity = True`
-5. **newly_active** — `days_since_first_valid_user_activity <= IMMATURE_DAYS_THRESHOLD` (default 14)
-6. **declining_adoption** — `active_user_change_28d_pct <= -DECLINE_MATERIAL_PCT` (default -20%)
-   AND `abs(active_user_change_28d) >= MIN_ABSOLUTE_CHANGE` (default 2)
-7. **elevated_lapse** — `lapse_rate_28d >= ELEVATED_LAPSE_THRESHOLD` (default 40%)
-8. **concentrated_dependency** — `user_view_hhi_28d > CONCENTRATION_ISSUE_HHI` (default 0.35)
-9. **low_repeat_usage** — `returning_user_share_28d < LOW_REPEAT_SHARE_THRESHOLD` (default 25%)
-10. **growing_adoption** — `active_user_change_28d_pct >= GROWTH_MATERIAL_PCT` (default +20%)
-11. **healthy_broad_adoption** — `unique_users_28d >= NICHE_ACTIVE_USER_MAX` (default 10)
-    AND `returning_user_share_28d >= NICHE_RETURNING_SHARE_MIN` (default 25%)
-12. **healthy_niche_adoption** — small user count but consistent returning behaviour
-13. **stable_engagement** — all checks pass; no material changes
+2. **insufficient_evidence** — `history_sufficient_28d = False`. Exception: if comparison history is sufficient and the report has no previous-period users but does have current users, this step exits early with `newly_active` instead.
+3. **inactive** — `unique_users_28d = 0` but `has_any_valid_user_activity = True`
+4. **newly_active** — `unique_users_previous_28d = 0` and current users present; comparison history sufficient
+5. **declining_adoption** — `active_user_change_28d_pct <= -DECLINE_MATERIAL_PCT` (default -20%)
+   AND `abs(active_user_change_28d) >= MIN_ABSOLUTE_CHANGE` (default 2), or decline combined with elevated lapse
+6. **elevated_lapse** — `lapse_rate_28d >= ELEVATED_LAPSE_THRESHOLD` (default 40%); no co-occurring decline
+7. **low_repeat_usage** — `returning_user_share_28d < LOW_REPEAT_SHARE_THRESHOLD` (default 25%); no co-occurring decline or lapse
+8. **concentrated_dependency** — `user_view_hhi_28d > CONCENTRATION_ISSUE_HHI` (default 0.35); no co-occurring decline
+9. **growing_adoption** — `active_user_direction_28d = growing`; no poor-severity issues
+10. **healthy_broad_adoption** — `unique_users_28d >= NICHE_ACTIVE_USER_MAX` (default 10)
+    AND `returning_user_share_28d >= NICHE_RETURNING_SHARE_MIN` (default 25%); no poor issues
+11. **healthy_niche_adoption** — `unique_users_28d` at or below niche threshold; consistent returning behaviour; no poor issues
+12. **stable_engagement** — no poor-severity issues; no warnings; sufficient evidence
+13. **privacy_limited** — privacy limitation issue raised; no higher-priority issue (decline, lapse, low-repeat, or concentration) has matched
+14. **growing_adoption** (fallback) — `active_user_direction_28d = growing`; reached when warnings prevented steps 9 and 12
+15. **mixed_signals** — no other condition matched (fallback)
 
 ---
 
@@ -241,18 +244,19 @@ Each `overall_engagement_status` maps to a standardised recommended action:
 | Status | Action |
 |--------|--------|
 | no_valid_user_data | investigate_data_quality |
-| privacy_limited | validate_report_audience |
 | insufficient_evidence | insufficient_evidence |
 | inactive | validate_report_audience |
 | newly_active | monitor_new_adoption |
 | declining_adoption | investigate_user_decline |
 | elevated_lapse | investigate_user_lapse |
-| concentrated_dependency | review_concentrated_dependency |
 | low_repeat_usage | improve_repeat_engagement |
+| concentrated_dependency | review_concentrated_dependency |
 | growing_adoption | continue_monitoring |
 | healthy_broad_adoption | continue_monitoring |
 | healthy_niche_adoption | continue_monitoring |
 | stable_engagement | continue_monitoring |
+| privacy_limited | continue_monitoring |
+| mixed_signals | continue_monitoring |
 
 **No action recommends retiring, deleting, or restricting access to any report.**
 These decisions require organisational context that analytics outputs alone cannot provide.
@@ -299,14 +303,28 @@ as the concentration distribution fields.
 
 ### Suppression and status availability
 
-The different thresholds create a distinct gap at 3–4 active users. A report with 3 or 4 users:
-- receives `repeat_usage_status = privacy_suppressed` (a classification — the field has a value)
-- has all share, distribution, cohort, frequency, and concentration fields set to null
+The thresholds create distinct availability tiers based on active user count:
 
-A report with 5 or more users has both the status classifications and the numeric distributions
-available. A status value of `privacy_suppressed` is therefore not equivalent to a null field —
-one means the status was assessed and the answer is privacy-limited; the other means the metric
-was not computed.
+**Fewer than 3 eligible users (unique_users_28d < 3):**
+`repeat_usage_status` returns the sentinel value `privacy_suppressed` — a classified field value,
+not a null field. All share, distribution, cohort, frequency, and concentration fields are also
+null (the threshold-5 gate is also not met).
+
+**3 or 4 eligible users (3 ≤ unique_users_28d < 5):**
+`repeat_usage_status` receives a real classification (`strong_repeat_engagement`,
+`moderate_repeat_engagement`, or `low_repeat_engagement`) because the threshold-3 gate is met
+(`unique_users_28d >= MIN_USERS_FOR_REPEAT_STATUS`). All share, distribution, cohort, frequency,
+and concentration fields remain null — the threshold-5 gate is not yet met.
+A categorical status is therefore available while its underlying detailed metrics remain suppressed.
+
+**5 or more eligible users (unique_users_28d >= 5):**
+Both the status classifications and the detailed numeric distributions are eligible for
+computation, subject to their own evidence requirements.
+
+A status value of `privacy_suppressed` is not equivalent to a null field — one means the
+threshold-3 gate was not met and no real classification could be produced; the other means a
+metric was not computed at all. Both are distinct from a null field caused by insufficient
+evidence.
 
 ### What suppression does not affect
 

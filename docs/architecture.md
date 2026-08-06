@@ -230,9 +230,11 @@ Complete engagement window boundaries
         +---> Concentration metrics    (HHI, top-user shares, effective user count)
               (report_user_concentration_metrics)
                     |
-                    v  [privacy suppression applied if users < PrivacyConfig.MIN_USERS_FOR_DISTRIBUTION_METRICS]
-                    |
+                    v
         +-----------+
+        |   [privacy suppression applied per module: share/distribution/cohort/frequency
+        |    fields suppressed at threshold 5 (module-local configs, not central PrivacyConfig);
+        |    repeat-engagement status classification uses threshold 3]
         |
         v
 Deterministic engagement status classification
