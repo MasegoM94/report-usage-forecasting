@@ -823,8 +823,13 @@ def generate_ai_insight(
 
     input_hash = _compute_context_hash(report_context, prompt_version, model)
 
-    # --- Skip-unchanged logic ---
-    if existing_insight and existing_insight.get("input_hash") == input_hash:
+    # --- Skip-unchanged logic (only reuse clean successes) ---
+    _reusable = {"success", "warnings"}
+    if (
+        existing_insight
+        and existing_insight.get("input_hash") == input_hash
+        and existing_insight.get("generation_status") in _reusable
+    ):
         return {
             **existing_insight,
             "generation_status": "reused",
@@ -845,7 +850,18 @@ def generate_ai_insight(
     # --- Try LLM ---
     if api_key:
         try:
-            result = _call_openai_api(report_context, model, api_key)
+            VALIDATION_RETRIES = 2
+            result = None
+            hard_errors = []
+            total_api_attempts = 0
+            for _vretry in range(VALIDATION_RETRIES):
+                result = _call_openai_api(report_context, model, api_key)
+                total_api_attempts += result.get("api_attempts", 1)
+                errors = result["validation_errors"]
+                hard_errors = [e for e in errors if not e.startswith("potential_identifier")]
+                if not hard_errors:
+                    break
+
             parsed = result["parsed"]
             errors = result["validation_errors"]
 
@@ -873,7 +889,7 @@ def generate_ai_insight(
                     "generation_status": "fallback_schema_invalid",
                     "validation_status": "invalid",
                     "generation_error": f"hard_errors:{hard_errors}",
-                    "api_attempts": result.get("api_attempts", 0),
+                    "api_attempts": total_api_attempts,
                 }
 
             # Add backward-compat aliases for Streamlit

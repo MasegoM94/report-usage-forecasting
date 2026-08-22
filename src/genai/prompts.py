@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 
-REPORT_INSIGHT_PROMPT_VERSION = "report_insight_v1"
+REPORT_INSIGHT_PROMPT_VERSION = "report_insight_v2"
 PORTFOLIO_INSIGHT_PROMPT_VERSION = "portfolio_insight_v1"
 
 REPORT_INSIGHT_SYSTEM_PROMPT = """You are an analytics communication assistant for a Power BI usage platform.
@@ -31,6 +31,7 @@ Rules you must follow:
 8. Do not infer causes, user intent, or organizational context not present in the data.
 9. Do not recommend: report retirement, deletion, model replacement, automatic retraining, or user-specific intervention.
 10. Return valid JSON only. Do not include explanation text outside the JSON object.
+11. When citing a number (count, percentage, or rate), use ONLY numbers that appear verbatim in the provided context. Do not derive, round, average, or calculate new numbers. If the exact figure is not in the context, describe the trend qualitatively instead.
 
 Required JSON schema:
 {

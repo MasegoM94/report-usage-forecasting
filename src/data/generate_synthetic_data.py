@@ -10,8 +10,8 @@ It is deliberately more realistic than a clean academic dataset: reports have
 unequal history lengths, some are retired mid-period, some have irregular or
 sparse usage, and others exhibit calendar-driven spikes.
 
-REPORT ARCHETYPES (3 reports each, 30 total)
---------------------------------------------
+REPORT ARCHETYPES (3 reports each except launch_and_growth, 32 total)
+----------------------------------------------------------------------
  1. stable_weekly           — Consistent daily usage with weekday/weekend
                               seasonality; the "business as usual" baseline.
  2. upward_adoption         — Growing user base over the period; adoption
@@ -28,6 +28,11 @@ REPORT ARCHETYPES (3 reports each, 30 total)
                               quarter-end (March, June, September, December).
  8. launch_and_growth       — Zero history until a mid-period launch date,
                               then growing adoption from a standing start.
+                              Includes R_031 (78 days) and R_032 (50 days)
+                              which fall below the MIN_DAYS=90 eligibility
+                              gate and are intentionally excluded from
+                              forecasting — representing newly launched
+                              reports with insufficient training history.
  9. replacement_cannibalized— Usage declining after a replacement report
                               launches and absorbs the user base.
 10. high_volatility_exec    — Base readership plus unpredictable spikes tied
@@ -447,6 +452,49 @@ REPORT_CATALOG: list[dict[str, Any]] = [
             "noise_std": 0.25,
         },
         # This report replaces R_025; its launch triggers R_025's decline.
+    },
+    # ── 8b. launch_and_growth (insufficient history — excluded from forecasting) ─
+    # These two reports launched late in the dataset window and have fewer than
+    # MIN_DAYS=90 days of history. They demonstrate the eligibility gate behaviour
+    # that 100% coverage on the earlier cohort cannot show.
+    {
+        "report_id": "R_031",
+        "report_name": "ESG Carbon & Nature Risk Dashboard",
+        "archetype": "launch_and_growth",
+        "workspace_id": "WS_Risk",
+        "report_type": "Dashboard",
+        "page_names": [
+            "Carbon Footprint Trend",
+            "Nature & Biodiversity Exposure",
+            "Transition Risk by Sector",
+            "Regulatory Alignment",
+        ],
+        "params": {
+            "base_views": 18,
+            "growth_factor": 2.8,
+            "launch_date": "2026-01-13",
+            "noise_std": 0.30,
+        },
+    },
+    {
+        "report_id": "R_032",
+        "report_name": "AI Programme ROI Tracker",
+        "archetype": "launch_and_growth",
+        "workspace_id": "WS_Operations",
+        "report_type": "Report",
+        "page_names": [
+            "Benefits Realisation Summary",
+            "Use Case Delivery",
+            "Cost Avoided",
+            "Quality & Accuracy Gains",
+            "Roadmap Progress",
+        ],
+        "params": {
+            "base_views": 22,
+            "growth_factor": 3.5,
+            "launch_date": "2026-02-10",
+            "noise_std": 0.25,
+        },
     },
     # ── 9. replacement_cannibalized ──────────────────────────────────────────
     {
