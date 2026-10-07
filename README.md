@@ -142,7 +142,7 @@ The notebooks provide an auditable and exploratory walkthrough of the analytical
 | `06_model_diagnostics.ipynb` | Explores bias stability, residual autocorrelation, interval calibration, and the consolidated model-health summary | `outputs/diagnostics/` | Exploratory |
 | `07_report_analytics.ipynb` | Builds report-level behavioural analytics, segmentation, and diagnostics from the processed series | `outputs/segments/`, `outputs/diagnostics/` | Exploratory |
 | `08_user_analytics.ipynb` | Builds user engagement features including lapse cohorts, return rates, and concentration metrics | `outputs/metrics/`, `outputs/segments/` | Exploratory |
-| `09_report_analytics.ipynb` | Assembles the canonical decision-support mart by joining all analytical layers into one report per row | `outputs/analytics/mart_report_analytics.csv` | Required walkthrough |
+| `09_canonical_mart.ipynb` | Assembles the canonical decision-support mart by joining all analytical layers into one report per row | `outputs/analytics/mart_report_analytics.csv` | Required walkthrough |
 | `10_genai_insights.ipynb` | Demonstrates the GenAI insight generation pipeline, validation checks, hash-reuse logic, and evaluation | `outputs/insights/`, `outputs/evaluation/` | Demonstration |
 
 ---
@@ -177,27 +177,35 @@ The API key is not required to run the application, run the tests, or use the ru
 
 ### Run the pipeline
 
-Synthetic data generation still requires the first four notebooks to be run in order, as the data generation scripts depend on notebook-specific parameter choices. After that, the analytical pipeline can be run from the command line:
+There are two equivalent paths to reproduce the full output set.
+
+**Option A — Notebook walkthrough (recommended for exploration)**
+
+Run the ten notebooks in order. Each notebook is self-contained, explains the analytical choices being made, and writes its outputs to the appropriate directory. This is the recommended path for understanding how the pipeline works.
+
+**Option B — Script automation (recommended for re-running)**
+
+After the synthetic data has been generated at least once (either via the notebooks or the scripts below), the full pipeline can be reproduced from the command line:
 
 ```bash
-# Generate synthetic data (run notebooks 01–04 first, or use scripts below)
+# Step 1 — Generate synthetic data and semantic model
 python src/data/generate_synthetic_data.py
 python src/data/build_semantic_model.py
 python src/data/validate_model.py
-python -m src.features.build_forecast_features     # if available, else run notebook 04
+python -m src.features.build_forecast_features
 
-# Forecasting and analytics
+# Step 2 — Forecasting and analytics
 python -m src.pipelines.run_forecasting_pipeline
 python -m src.pipelines.run_report_analytics_pipeline
 python -m src.pipelines.run_user_analytics_pipeline
 python -m src.pipelines.run_analytics_mart_pipeline
 
-# GenAI insights (requires OPENAI_API_KEY, or uses rule-based fallback)
+# Step 3 — GenAI insights (requires OPENAI_API_KEY, or uses rule-based fallback)
 python -m src.genai.insight_generator
 python -m src.genai.portfolio_insights
 ```
 
-Each pipeline script writes its outputs to the appropriate `outputs/` subdirectory.
+Each script writes its outputs to the appropriate `outputs/` subdirectory.
 
 ### Launch Streamlit
 
