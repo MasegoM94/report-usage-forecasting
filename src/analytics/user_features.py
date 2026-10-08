@@ -23,8 +23,6 @@ repeat_usage_flag : DEPRECATED alias for lifetime_returned_flag.
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 import pandas as pd
 
@@ -189,15 +187,7 @@ def build_user_features(
         feature_df["active_days"].fillna(0).gt(1)
     )
 
-    # DEPRECATED: repeat_usage_flag — alias for lifetime_returned_flag.
-    # Old definition was ambiguous: (active_days > 1) OR (total_views > 1).
-    # New definition: active_days > 1 only. Retained for backwards compatibility.
-    # Remove in Sprint 7.
-    warnings.warn(
-        "repeat_usage_flag is deprecated. Use lifetime_returned_flag instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    # Backwards-compatibility alias; use lifetime_returned_flag in new code.
     feature_df["repeat_usage_flag"] = feature_df["lifetime_returned_flag"]
 
     # Ensure user_key column is set correctly (never user_id in output).
