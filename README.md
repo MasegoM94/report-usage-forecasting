@@ -194,13 +194,23 @@ python src/data/build_semantic_model.py
 python src/data/validate_model.py
 python -m src.features.build_forecast_features
 
-# Step 2 — Forecasting and analytics
+# Step 2 — Forecasting and per-report feature engineering
 python -m src.pipelines.run_forecasting_pipeline
 python -m src.pipelines.run_report_analytics_pipeline
 python -m src.pipelines.run_user_analytics_pipeline
+
+# Step 3 — Context layers (each enriches the canonical mart; order within step 3 is flexible)
+python -m src.pipelines.run_engagement_context_pipeline
+python -m src.pipelines.run_forecast_outlook_pipeline
+python -m src.pipelines.run_metadata_context_pipeline
+python -m src.pipelines.run_model_health_context_pipeline
+python -m src.pipelines.run_diagnostics_pipeline
+python -m src.pipelines.run_segmentation_pipeline   # must run before the mart
+
+# Step 4 — Canonical analytics mart (joins all context layers into one row per report)
 python -m src.pipelines.run_analytics_mart_pipeline
 
-# Step 3 — GenAI insights (requires OPENAI_API_KEY, or uses rule-based fallback)
+# Step 5 — GenAI insights (requires OPENAI_API_KEY, or uses rule-based fallback)
 python -m src.genai.insight_generator
 python -m src.genai.portfolio_insights
 ```
