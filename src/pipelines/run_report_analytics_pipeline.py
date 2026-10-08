@@ -109,7 +109,14 @@ def run_pipeline(project_root: Path | None = None) -> dict[str, Path]:
             diagnostics_df=None,
             analytics_run_id=str(uuid.uuid4()),
         )
-        report_diagnostics = build_report_diagnostics(report_features, report_segments)
+        report_diagnostics = build_report_diagnostics(
+            report_features,
+            forecast_df=None,
+            model_health_df=None,
+            engagement_df=None,
+            metadata_df=None,
+            analytics_run_id=str(uuid.uuid4()),
+        )
         report_segments.to_csv(seg_path, index=False)
         report_diagnostics.to_csv(diag_path, index=False)
         output_paths["segments"] = seg_path
