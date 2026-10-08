@@ -276,6 +276,7 @@ All excluded artifacts can be recreated by following the pipeline workflow descr
 - **GenAI quality varies.** Output quality depends on the model version, prompt, and context length. The validation layer catches common failure modes but is not exhaustive.
 - **No live enterprise integration.** The project demonstrates production-oriented patterns but does not connect to a live Power BI API, data warehouse, or organisational access-control system.
 - **Stakeholder usefulness testing not completed.** The Streamlit application has not been evaluated with real analytics or reporting stakeholders.
+- **CSV writes are not transactional.** Pipeline stages write outputs to separate CSV files independently. Separate pipeline processes are not coordinated; running two pipelines concurrently against the same output directory may produce inconsistent results.
 - **Notebook data-generation step.** Fully automated one-command reproducibility from an empty state is not yet available; notebooks 01–04 provide the synthetic data generation step.
 
 ---

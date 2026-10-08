@@ -713,6 +713,10 @@ def available_reports(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
         .drop_duplicates(subset=["report_id"])   # first occurrence wins (mart is first)
         .sort_values("report_id")
     )
+    # Normalise to object dtype so string concatenation works regardless of
+    # whether pandas loaded these columns as ArrowStringArray (pandas 3.x).
+    reports["report_id"] = reports["report_id"].astype(object)
+    reports["report_name"] = reports["report_name"].astype(object)
     reports["report_name"] = reports["report_name"].fillna(reports["report_id"])
 
     # Disambiguate identical display names
